@@ -74,6 +74,8 @@ function freshDb() {
     expenses: [], // { id, date, catId, amount, split, note, createdAt }
     startMonth: monthKey(),
     startCarry: 0, // rollover into startMonth (preserved when old months are pruned)
+    rules: {}, // merchant key -> catId, learned from imports
+    ignoredImports: [], // importIds of bank charges you chose not to import
   };
 }
 
@@ -134,6 +136,7 @@ function prune() {
   for (const k of Object.keys(db.months)) if (k < cutoff) delete db.months[k];
   db.startMonth = cutoff;
   db.startCarry = carry;
+  db.ignoredImports = db.ignoredImports.filter((id) => id.slice(0, 7) >= cutoff); // ids start with the date
 
   const used = new Set(db.expenses.map((e) => e.catId));
   Object.values(db.months).forEach((m) => Object.keys(m.fixed).forEach((id) => used.add(id)));
@@ -141,6 +144,9 @@ function prune() {
 }
 
 function startup() {
+  // Fields added after the first release; older saved data won't have them.
+  db.rules ||= {};
+  db.ignoredImports ||= [];
   ensureMonths();
   prune();
   save();
@@ -310,6 +316,11 @@ function settingsView() {
       <p class="hint">Your total for the month, including fixed bills. Changes apply to this month and every month after.</p>
     </section>
     <section class="card">
+      <h2>Import from Chase</h2>
+      <p class="hint" style="margin:0 0 4px">On chase.com, open your card, choose <b>Download account activity</b> and pick the <b>CSV</b> file type. Then tap below and select the file. Charges you've already imported are skipped automatically.</p>
+      <button class="primary" data-action="import-chase">Import from Chase</button>
+    </section>
+    <section class="card">
       <h2>Fixed expenses <small>auto-applied monthly</small></h2>
       ${activeCats('fixed').map(row).join('')}
       <button class="add-row" data-action="new-cat" data-type="fixed">+ Add fixed expense</button>
@@ -419,6 +430,239 @@ function monthFixedSheet(id) {
   `, 'mf-amt');
 }
 
+// ---------- Chase import ----------
+// Reads the CSV from chase.com: credit card (Transaction Date, Description, Category, Type, Amount)
+// or checking (Posting Date, Description, Amount, Type). Purchases are negative amounts.
+
+const CHASE_CATEGORY_MAP = {
+  'food & drink': 'dining',
+  groceries: 'grocery',
+  entertainment: 'entertainment',
+  'health & wellness': 'fitness',
+};
+const DRINK_WORDS = /\b(starbucks|coffee|boba|tea|peet'?s|dunkin|philz|blue bottle|dutch bros|gong cha|kung fu tea|tiger sugar|sharetea|chatime)\b/i;
+const BILL_CATEGORIES = new Set(['bills & utilities']);
+const PROCESSOR_PREFIX = /^(tst|sq|sp|dd|py|pp|ic|bt)\s*\*\s*/i; // "TST* SUSHI PLACE" -> "SUSHI PLACE"
+
+function parseCSV(text) {
+  const rows = [];
+  let row = [];
+  let field = '';
+  let quoted = false;
+  text = text.replace(/^\uFEFF/, ''); // byte-order mark some exports start with
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch !== '"') field += ch;
+      else if (text[i + 1] === '"') { field += '"'; i++; }
+      else quoted = false;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ',') { row.push(field); field = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = '';
+    } else field += ch;
+  }
+  if (field || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.some((f) => f.trim()));
+}
+
+function csvDateToISO(s) {
+  const us = s.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+  if (us) return `${us[3].length === 2 ? '20' + us[3] : us[3]}-${pad(us[1])}-${pad(us[2])}`;
+  const iso = s.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return iso ? `${iso[1]}-${iso[2]}-${iso[3]}` : null;
+}
+
+function readChaseCSV(text) {
+  const [header, ...lines] = parseCSV(text);
+  if (!header) return null;
+  const h = header.map((x) => x.trim().toLowerCase());
+  const col = (...names) => names.map((n) => h.indexOf(n)).find((i) => i >= 0) ?? -1;
+  const iDate = col('transaction date', 'posting date', 'post date');
+  const iDesc = col('description');
+  const iAmt = col('amount');
+  if (iDate < 0 || iDesc < 0 || iAmt < 0) return null;
+  const iCat = col('category');
+  const iType = col('type');
+  const get = (r, i) => (i >= 0 ? (r[i] || '').trim() : '');
+  return lines
+    .map((r) => ({
+      date: csvDateToISO(get(r, iDate)),
+      desc: get(r, iDesc),
+      amount: Math.round(parseFloat(get(r, iAmt).replace(/[$,\s]/g, '')) * 100),
+      chaseCat: get(r, iCat),
+      type: get(r, iType).toLowerCase(),
+      isCard: iCat >= 0,
+    }))
+    .filter((t) => t.date && t.desc && Number.isFinite(t.amount) && t.amount !== 0);
+}
+
+// Short, stable key for a merchant so "STARBUCKS STORE 123" and "STARBUCKS STORE 456" match.
+const merchantKey = (desc) =>
+  desc.toLowerCase().replace(PROCESSOR_PREFIX, '').replace(/[^a-z&]+/g, ' ').trim().split(' ').slice(0, 2).join(' ');
+
+const prettyMerchant = (desc) =>
+  desc.replace(PROCESSOR_PREFIX, '').replace(/#?\d{3,}/g, '').replace(/\s+/g, ' ').trim()
+    .toLowerCase().replace(/(^|\s)[a-z]/g, (c) => c.toUpperCase()).slice(0, 40);
+
+function suggestCategory(t) {
+  const flex = activeCats('flex');
+  const byName = (name) => flex.find((c) => c.name.toLowerCase() === name)?.id || null;
+  const learned = db.rules[merchantKey(t.desc)];
+  if (learned && flex.some((c) => c.id === learned)) return learned;
+  if (DRINK_WORDS.test(t.desc) && byName('drinks')) return byName('drinks');
+  return byName(CHASE_CATEGORY_MAP[t.chaseCat.toLowerCase()]);
+}
+
+const daysApart = (a, b) => Math.abs(Date.parse(a) - Date.parse(b)) / 864e5;
+
+// Every charge in the file becomes an item. Ones with a `skip` reason go in the collapsed
+// "Skipped" section; `locked` ones can't be re-added (it would double-count or fall outside history).
+function buildImport(txns) {
+  const minDate = `${db.startMonth}-01`;
+  const imported = new Set(db.expenses.map((e) => e.importId).filter(Boolean));
+  const ignored = new Set(db.ignoredImports);
+  const manual = db.expenses.filter((e) => !e.importId);
+  const matched = new Set();
+  const occurrences = {};
+  const items = [];
+
+  for (const t of txns) {
+    // Two identical charges on the same day get different ids.
+    const base = `${t.date}|${t.desc}|${t.amount}`;
+    occurrences[base] = (occurrences[base] || 0) + 1;
+    const importId = `${base}|${occurrences[base]}`;
+    const amount = -t.amount; // positive = spending, negative = refund
+    const item = { importId, date: t.date, desc: t.desc, note: prettyMerchant(t.desc), amount,
+      chaseCat: t.chaseCat, catId: suggestCategory(t), split: false, warn: '', skip: '', locked: false, include: false };
+
+    if (imported.has(importId)) Object.assign(item, { skip: 'Already imported', locked: true });
+    else if (t.date < minDate) Object.assign(item, { skip: 'Before your history starts', locked: true });
+    // Card returns are normal refunds; payments and checking deposits need a deliberate opt-in.
+    else if (t.amount > 0 && !(t.isCard && t.type === 'return')) item.skip = 'Payment or deposit · would count as a refund';
+    else if (ignored.has(importId)) item.skip = 'You unchecked this in an earlier import';
+    if (item.skip) {
+      items.push(item);
+      continue;
+    }
+
+    const twin = manual.find((e) => !matched.has(e.id) && Math.abs(e.amount) === Math.abs(amount) && daysApart(e.date, t.date) <= 2);
+    if (twin) {
+      matched.add(twin.id);
+      item.warn = 'Looks like one you already entered';
+    } else if (BILL_CATEGORIES.has(t.chaseCat.toLowerCase())) {
+      item.warn = 'Looks like a fixed bill';
+    }
+    item.include = !item.warn && !!item.catId;
+    items.push(item);
+  }
+  items.sort((a, b) => b.date.localeCompare(a.date));
+  return items;
+}
+
+let pendingImport = null;
+
+function importRow(it, i, flex) {
+  return `
+    <div class="imp ${it.include ? '' : 'off'}" data-i="${i}">
+      <input type="checkbox" class="imp-check" data-imp="include" ${it.include ? 'checked' : ''} ${it.locked ? 'disabled' : ''} aria-label="Import this charge">
+      <div class="imp-main">
+        <div class="imp-top"><span class="row-title">${esc(it.note)}</span><span class="row-amt">${fmtLeft(it.amount)}</span></div>
+        <div class="row-sub">${dayLabel(it.date)}${it.chaseCat ? ` · ${esc(it.chaseCat)}` : ''}${it.amount < 0 && !it.skip ? ' · Refund' : ''}</div>
+        ${it.warn ? `<div class="imp-warn">⚠️ ${it.warn}</div>` : ''}
+        ${it.skip ? `<div class="imp-reason">${it.skip}</div>` : ''}
+        ${it.locked ? '' : `
+          <div class="imp-ctrls">
+            <select data-imp="cat" class="${it.catId ? '' : 'empty'}" aria-label="Category">
+              <option value="">Choose category…</option>
+              ${flex.map((c) => `<option value="${c.id}" ${c.id === it.catId ? 'selected' : ''}>${c.emoji} ${esc(c.name)}</option>`).join('')}
+            </select>
+            <label class="imp-split"><input type="checkbox" data-imp="split"> Split ½</label>
+          </div>`}
+      </div>
+    </div>`;
+}
+
+function importSheet(items) {
+  pendingImport = items;
+  if (!items.length) {
+    openSheet(`
+      <h2>No charges found</h2>
+      <p class="hint">This file doesn't have any transactions in it.</p>
+      <button class="primary" data-action="close">OK</button>`);
+    return;
+  }
+  const flex = activeCats('flex');
+  const rows = (skipped) => items.map((it, i) => (!!it.skip === skipped ? importRow(it, i, flex) : '')).join('');
+  const newCount = items.filter((it) => !it.skip).length;
+  const skipCount = items.length - newCount;
+  openSheet(`
+    <h2>${newCount ? `Review ${newCount} charge${newCount > 1 ? 's' : ''}` : 'Nothing new to import'}</h2>
+    <p class="hint">${newCount
+      ? 'Checked charges will be added. Unchecked ones will appear under Skipped next time.'
+      : 'Everything in this file was skipped. Open the list below to add any of them anyway.'}</p>
+    <div class="imp-list">${rows(false)}</div>
+    ${skipCount ? `
+      <details class="imp-skipped" ${newCount ? '' : 'open'}>
+        <summary>Skipped (${skipCount})</summary>
+        <p class="hint">Tick a charge to add it anyway. Greyed-out ones can't be added again.</p>
+        <div class="imp-list">${rows(true)}</div>
+      </details>` : ''}
+    <div class="sheet-footer">
+      <button class="primary" id="imp-save" data-action="do-import"></button>
+      <button class="text-btn" data-action="close">Cancel</button>
+    </div>
+  `);
+  updateImportButton();
+}
+
+function updateImportButton() {
+  const btn = document.getElementById('imp-save');
+  if (!btn) return;
+  const ready = pendingImport.filter((it) => it.include && it.catId);
+  const missing = pendingImport.filter((it) => it.include && !it.catId).length;
+  const total = ready.reduce((sum, it) => sum + counted(it), 0);
+  pendingImport.forEach((it, i) => {
+    $sheetBody.querySelector(`.imp[data-i="${i}"] select`)?.classList.toggle('need', it.include && !it.catId);
+  });
+  btn.disabled = !ready.length || missing > 0;
+  if (missing) btn.textContent = `Choose a category for ${missing} checked charge${missing > 1 ? 's' : ''}`;
+  else btn.textContent = ready.length ? `Import ${ready.length} · ${fmtLeft(total)}` : 'Nothing selected';
+}
+
+function onImportField(el) {
+  const row = el.closest('.imp');
+  const it = pendingImport[row.dataset.i];
+  if (el.dataset.imp === 'include') it.include = el.checked;
+  if (el.dataset.imp === 'split') it.split = el.checked;
+  if (el.dataset.imp === 'cat') {
+    it.catId = el.value || null;
+    el.classList.toggle('empty', !it.catId);
+    if (it.catId) row.querySelector('[data-imp=include]').checked = it.include = true;
+  }
+  row.classList.toggle('off', !it.include);
+  updateImportButton();
+}
+
+document.getElementById('chase-file').addEventListener('change', async (ev) => {
+  const file = ev.target.files[0];
+  ev.target.value = ''; // so picking the same file again still fires
+  if (!file) return;
+  const txns = readChaseCSV(await file.text());
+  if (!txns) {
+    openSheet(`
+      <h2>Couldn't read that file</h2>
+      <p class="hint">Make sure it's the CSV download from chase.com, not a PDF statement.</p>
+      <button class="primary" data-action="close">OK</button>`);
+    return;
+  }
+  importSheet(buildImport(txns));
+});
+
 // ---------- Actions ----------
 
 let toastTimer;
@@ -474,6 +718,7 @@ const actions = {
     };
     if (!data.amount) return;
     const existing = db.expenses.find((e) => e.id === el.dataset.id);
+    if (existing && existing.amount < 0) data.amount = -data.amount; // keep imported refunds negative
     if (existing) Object.assign(existing, data);
     else db.expenses.push({ id: uid(), createdAt: Date.now(), ...data });
     const where = date.slice(0, 7) === ui.month ? '' : ` in ${monthLabel(date.slice(0, 7))}`;
@@ -517,6 +762,22 @@ const actions = {
     delete db.months[monthKey()].fixed[c.id];
     commit(`${c.name} deleted`);
   },
+  'import-chase': () => document.getElementById('chase-file').click(),
+  'do-import'() {
+    const ready = pendingImport.filter((it) => it.include && it.catId);
+    for (const it of pendingImport) {
+      if (it.include && it.catId) db.rules[merchantKey(it.desc)] = it.catId;
+      else if (!it.skip) db.ignoredImports.push(it.importId);
+    }
+    const added = new Set(ready.map((it) => it.importId));
+    db.ignoredImports = db.ignoredImports.filter((id) => !added.has(id));
+    ready.forEach((it, n) => db.expenses.push({
+      id: uid(), createdAt: Date.now() + n, importId: it.importId,
+      date: it.date, catId: it.catId, amount: it.amount, split: it.split, note: it.note,
+    }));
+    pendingImport = null;
+    commit(`Imported ${ready.length} expense${ready.length > 1 ? 's' : ''}`);
+  },
   reset() {
     if (!confirm('Erase all expenses, categories and settings? This cannot be undone.')) return;
     db = freshDb();
@@ -537,6 +798,7 @@ function onFieldChange(ev) {
 document.addEventListener('input', onFieldChange);
 document.addEventListener('change', (ev) => {
   onFieldChange(ev);
+  if (ev.target.dataset.imp) onImportField(ev.target);
   if (ev.target.id === 'budget') {
     db.budget = parseAmount(ev.target.value);
     db.months[monthKey()].budget = db.budget;
@@ -582,7 +844,8 @@ document.addEventListener('visibilitychange', () => {
 startup();
 render();
 
-if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+// Offline caching is skipped on localhost so local previews always show your latest edits.
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js');
 }
 navigator.storage?.persist?.();

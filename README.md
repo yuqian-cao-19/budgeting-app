@@ -3,12 +3,7 @@
 A simple monthly expense tracker that installs on iPhone and Android as a home-screen app.
 Your data never leaves the phone: no account, no server, and it costs nothing.
 
-## Publish it (one time, free) with GitHub Pages
-
-1. Sign in at https://github.com and click **New repository**. Name it `budget`, make it **Public**, and click **Create repository**.
-2. On the new repo page, click **uploading an existing file**. Drag in everything inside this `budget-app` folder (`index.html`, `app.js`, `styles.css`, `sw.js`, `manifest.webmanifest`, and the `icons` folder). Then click **Commit changes**.
-3. Go to **Settings → Pages**. Under *Build and deployment*, set Source to **Deploy from a branch**, set Branch to **main** and folder to **/ (root)**, then click **Save**.
-4. After about a minute your app will be live at `https://<your-username>.github.io/budget/`.
+App is live at `https://yuqian-cao-19.github.io/budgeting-app/`.
 
 The repo is public, but it holds only the app's code. Your expenses stay on your phone.
 
@@ -19,6 +14,25 @@ The repo is public, but it holds only the app's code. Your expenses stay on your
 
 Always open the app from its home-screen icon. On iPhone, the icon and Safari keep separate data.
 
+## Import from Chase
+
+1. On chase.com, open your card's activity, choose **Download account activity**, and pick the **CSV** file type. Pick any date range; overlapping ranges are fine.
+2. In the app, go to **Settings → Import from Chase** and select the file.
+3. Review the list. Each charge gets a suggested category, which you can change. You can also mark a charge **Split ½**, or uncheck charges you don't want.
+
+How the import handles charges:
+
+- Nothing is hidden. Skipped charges are listed in a collapsed **Skipped** section at the bottom, each with the reason it was skipped:
+  - **Already imported** or **Before your history starts:** shown greyed out. They can't be added, because that would double-count them or put them outside the months the app tracks.
+  - **You unchecked this in an earlier import** or **Payment or deposit:** tick it (and pick a category) to add it anyway. A payment or deposit is added as a refund.
+- Importing the same dates twice is safe, because already-imported charges never come in again.
+- Returns are added as refunds, which reduce your spending.
+- Charges that match an expense you entered by hand (same amount, within 2 days) are flagged and left unchecked, so they aren't counted twice.
+- "Bills & Utilities" charges are left unchecked, because your fixed bills already count them.
+- The app remembers the category you pick for each merchant and uses it next time.
+
+The file is read on your phone and never uploaded anywhere.
+
 ## Good to know
 
 - Data lives in the app's local storage on each phone. Two phones won't sync with each other.
@@ -28,12 +42,12 @@ Always open the app from its home-screen icon. On iPhone, the icon and Safari ke
 
 ## Updating the app later
 
-Upload the changed files to the repo again. Also change `CACHE = 'budget-v1'` in `sw.js` to a new value (for example `budget-v2`) so phones download the new version. The update shows up the second time you open the app.
+Upload the changed files to the repo again. Also bump the `CACHE` value in `sw.js` (for example `budget-v2` → `budget-v3`) so phones download the new version. The update shows up the second time you open the app.
 
 ## Run locally
 
 ```bash
-python3 -m http.server 8765 --directory budget-app
+python3 -m http.server 8765 --directory ~/Documents/budget-app
 ```
 
-Then open http://localhost:8765.
+Then open http://localhost:8765. Offline caching is turned off on localhost, so you always see your latest edits.

@@ -7,6 +7,7 @@
   --accent: #16a34a;
   --accent-soft: #dcfce7;
   --neg: #dc2626;
+  --warn: #b45309;
   --chip: #f1f2f5;
   --shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 4px 16px rgba(0, 0, 0, .04);
   --tabbar-h: 60px;
@@ -23,6 +24,7 @@
     --accent: #22c55e;
     --accent-soft: #123222;
     --neg: #f87171;
+    --warn: #fbbf24;
     --chip: #232733;
     --shadow: none;
   }
@@ -228,6 +230,40 @@ main {
 .sheet.open { pointer-events: auto; }
 .sheet.open .backdrop { opacity: 1; }
 .sheet.open .panel { transform: none; }
+
+/* ---------- Import review ---------- */
+
+.imp { display: flex; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }
+.imp:first-child { border-top: 0; }
+.imp.off .imp-top, .imp.off .row-sub { opacity: .5; }
+.imp-check { width: 22px; height: 22px; margin: 1px 0 0; flex: none; accent-color: var(--accent); }
+.imp-main { flex: 1; min-width: 0; }
+.imp-top { display: flex; justify-content: space-between; gap: 8px; }
+.imp-top .row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.imp-warn { font-size: 13px; color: var(--warn); margin-top: 2px; }
+.imp-reason { font-size: 13px; color: var(--muted); margin-top: 2px; font-style: italic; }
+.imp-check:disabled { opacity: .35; }
+.imp-skipped { border-top: 1px solid var(--line); margin-top: 4px; }
+.imp-skipped summary { padding: 14px 0 10px; font-weight: 650; color: var(--muted); cursor: pointer; }
+.imp-skipped .hint { margin: 0 0 4px; }
+.text-btn { display: block; width: 100%; padding: 10px; margin-top: 4px; color: var(--muted); font-weight: 600; }
+.imp-ctrls { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.imp-ctrls select {
+  flex: 1; min-width: 0; min-height: 40px; padding: 0 10px;
+  border: 2px solid transparent; border-radius: 10px; background: var(--chip);
+  font: inherit; font-size: 16px; color: inherit;
+}
+.imp-ctrls select.empty { border-color: var(--line); color: var(--muted); }
+.imp-ctrls select.need { border-color: var(--warn); }
+.imp-split { display: flex; align-items: center; gap: 6px; font-size: 14px; white-space: nowrap; }
+.imp-split input { width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
+/* Sticks over the panel's bottom padding so rows don't show beneath the button. */
+.sheet-footer {
+  --pad: calc(env(safe-area-inset-bottom) + 18px);
+  position: sticky; bottom: calc(-1 * var(--pad));
+  margin-bottom: calc(-1 * var(--pad)); padding: 2px 0 var(--pad);
+  background: var(--card);
+}
 
 .toast {
   position: fixed; left: 50%; top: calc(env(safe-area-inset-top) + 12px); z-index: 20;

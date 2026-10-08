@@ -1,6 +1,6 @@
 // Offline support: serve from cache, refresh the cache in the background.
 // Bump CACHE when you change files so phones pick up the new version.
-const CACHE = 'budget-v1';
+const CACHE = 'budget-v3';
 const ASSETS = [
   './',
   './index.html',
