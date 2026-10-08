@@ -5,6 +5,9 @@
 const STORAGE_KEY = 'budget-app-v1';
 const KEEP_MONTHS = 12; // current month + 11 previous
 
+// OAuth Client ID from Google Cloud (see README). Not a secret: it only works on the web addresses you allow.
+const GOOGLE_CLIENT_ID = '23549480658-icft68qobujknca2mf7lvhpumim6kpqc.apps.googleusercontent.com';
+
 const DEFAULT_CATEGORIES = [
   { name: 'Rent', type: 'fixed', emoji: '🏠', amount: 0 },
   { name: 'Internet', type: 'fixed', emoji: '🌐', amount: 0 },
@@ -76,6 +79,7 @@ function freshDb() {
     startCarry: 0, // rollover into startMonth (preserved when old months are pruned)
     rules: {}, // merchant key -> catId, learned from imports
     ignoredImports: [], // importIds of bank charges you chose not to import
+    sheet: { url: '', me: '', people: [] }, // shared Google Sheet; `me` picks your share column
   };
 }
 
@@ -147,6 +151,7 @@ function startup() {
   // Fields added after the first release; older saved data won't have them.
   db.rules ||= {};
   db.ignoredImports ||= [];
+  db.sheet ||= { url: '', me: '', people: [] };
   ensureMonths();
   prune();
   save();
@@ -163,6 +168,8 @@ function render() {
   document.querySelectorAll('.tabbar [data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === ui.view));
   document.body.classList.toggle('on-settings', ui.view === 'settings');
   document.body.classList.toggle('on-home', ui.view === 'home');
+  // Load Google sign-in ahead of time: the sign-in popup must open right on the tap.
+  if (ui.view === 'settings' && db.sheet.url) prepareGoogle();
 }
 
 const stat = (label, value) => `<div class="stat"><b>${value}</b><span>${label}</span></div>`;
@@ -321,6 +328,16 @@ function settingsView() {
       <button class="primary" data-action="import-chase">Import from Chase</button>
     </section>
     <section class="card">
+      <h2>Shared Google Sheet</h2>
+      <input id="sheet-url" class="text" style="margin-top:0" placeholder="Paste the Google Sheet link" value="${esc(db.sheet.url)}" autocomplete="off">
+      ${db.sheet.people.length ? `
+        <div class="me-row"><span>I'm</span>
+          ${db.sheet.people.map((p) => `<button class="chip ${p === db.sheet.me ? 'on' : ''}" data-action="set-me" data-name="${esc(p)}">${esc(p)}</button>`).join('')}
+        </div>` : ''}
+      <p class="hint">Adds your share of things your partner paid for. You review every row before it's added.</p>
+      <button class="primary" data-action="sync-sheet" ${parseSheetLink(db.sheet.url) ? '' : 'disabled'}>Sync from sheet</button>
+    </section>
+    <section class="card">
       <h2>Fixed expenses <small>auto-applied monthly</small></h2>
       ${activeCats('fixed').map(row).join('')}
       <button class="add-row" data-action="new-cat" data-type="fixed">+ Add fixed expense</button>
@@ -442,6 +459,12 @@ const CHASE_CATEGORY_MAP = {
 };
 const DRINK_WORDS = /\b(starbucks|coffee|boba|tea|peet'?s|dunkin|philz|blue bottle|dutch bros|gong cha|kung fu tea|tiger sugar|sharetea|chatime)\b/i;
 const BILL_CATEGORIES = new Set(['bills & utilities']);
+// Hints for hand-typed names (e.g. "Restaurant" in the shared sheet), checked after Chase's own category.
+const NAME_HINTS = [
+  [/\b(restaurants?|dinner|lunch|brunch|takeout|doordash|uber ?eats)\b/i, 'dining'],
+  [/\b(grocer(y|ies)|costco|trader joe'?s|safeway|whole foods|h ?mart|99 ranch)\b/i, 'grocery'],
+  [/\b(movies?|concert|tickets?|netflix|spotify)\b/i, 'entertainment'],
+];
 const PROCESSOR_PREFIX = /^(tst|sq|sp|dd|py|pp|ic|bt)\s*\*\s*/i; // "TST* SUSHI PLACE" -> "SUSHI PLACE"
 
 function parseCSV(text) {
@@ -515,7 +538,10 @@ function suggestCategory(t) {
   const learned = db.rules[merchantKey(t.desc)];
   if (learned && flex.some((c) => c.id === learned)) return learned;
   if (DRINK_WORDS.test(t.desc) && byName('drinks')) return byName('drinks');
-  return byName(CHASE_CATEGORY_MAP[t.chaseCat.toLowerCase()]);
+  const fromChase = byName(CHASE_CATEGORY_MAP[t.chaseCat.toLowerCase()]);
+  if (fromChase) return fromChase;
+  const hint = NAME_HINTS.find(([re, name]) => re.test(t.desc) && byName(name));
+  return hint ? byName(hint[1]) : null;
 }
 
 const daysApart = (a, b) => Math.abs(Date.parse(a) - Date.parse(b)) / 864e5;
@@ -538,7 +564,7 @@ function buildImport(txns) {
     const importId = `${base}|${occurrences[base]}`;
     const amount = -t.amount; // positive = spending, negative = refund
     const item = { importId, date: t.date, desc: t.desc, note: prettyMerchant(t.desc), amount,
-      chaseCat: t.chaseCat, catId: suggestCategory(t), split: false, warn: '', skip: '', locked: false, include: false };
+      sub: t.chaseCat, chaseCat: t.chaseCat, catId: suggestCategory(t), split: false, warn: '', skip: '', locked: false, include: false };
 
     if (imported.has(importId)) Object.assign(item, { skip: 'Already imported', locked: true });
     else if (t.date < minDate) Object.assign(item, { skip: 'Before your history starts', locked: true });
@@ -566,13 +592,27 @@ function buildImport(txns) {
 
 let pendingImport = null;
 
+// What an import row will add to your spending. Sheet rows use your share unless you untick Split.
+const importAmount = (it) => (it.source === 'sheet' ? (it.useShare || !it.total ? it.share : it.total) : counted(it));
+const canSplitShare = (it) => it.source === 'sheet' && it.total > it.share && it.share > 0;
+
+// Sheet rows are saved like hand-entered ones: an even half becomes "½ of $50".
+function sheetExpenseAmount(it) {
+  if (!it.useShare || !it.total) return { amount: it.useShare ? it.share : it.total, split: false };
+  return it.share === Math.round(it.total / 2) ? { amount: it.total, split: true } : { amount: it.share, split: false };
+}
+
 function importRow(it, i, flex) {
   return `
     <div class="imp ${it.include ? '' : 'off'}" data-i="${i}">
       <input type="checkbox" class="imp-check" data-imp="include" ${it.include ? 'checked' : ''} ${it.locked ? 'disabled' : ''} aria-label="Import this charge">
       <div class="imp-main">
-        <div class="imp-top"><span class="row-title">${esc(it.note)}</span><span class="row-amt">${fmtLeft(it.amount)}</span></div>
-        <div class="row-sub">${dayLabel(it.date)}${it.chaseCat ? ` · ${esc(it.chaseCat)}` : ''}${it.amount < 0 && !it.skip ? ' · Refund' : ''}</div>
+        <div class="imp-top"><span class="row-title">${esc(it.note)}</span><span class="row-amt">${fmtLeft(importAmount(it))}</span></div>
+        <div class="row-sub">${[
+          it.source === 'sheet' && !it.locked ? '' : dayLabel(it.date), // editable sheet rows show a date picker instead
+          esc(it.sub || ''),
+          it.amount < 0 && !it.skip ? 'Refund' : '',
+        ].filter(Boolean).join(' · ')}</div>
         ${it.warn ? `<div class="imp-warn">⚠️ ${it.warn}</div>` : ''}
         ${it.skip ? `<div class="imp-reason">${it.skip}</div>` : ''}
         ${it.locked ? '' : `
@@ -581,8 +621,15 @@ function importRow(it, i, flex) {
               <option value="">Choose category…</option>
               ${flex.map((c) => `<option value="${c.id}" ${c.id === it.catId ? 'selected' : ''}>${c.emoji} ${esc(c.name)}</option>`).join('')}
             </select>
-            <label class="imp-split"><input type="checkbox" data-imp="split"> Split ½</label>
-          </div>`}
+            ${it.source === 'sheet'
+              ? `<input type="date" class="imp-date" data-imp="date" value="${it.date}" min="${db.startMonth}-01" aria-label="Date">`
+              : `<label class="imp-split"><input type="checkbox" data-imp="split"> Split ½</label>`}
+          </div>
+          ${canSplitShare(it) ? `
+            <label class="imp-split imp-share">
+              <input type="checkbox" data-imp="share" ${it.useShare ? 'checked' : ''}>
+              <span>Split · you pay ${fmt(it.share)} of ${fmt(it.total)}</span>
+            </label>` : ''}`}
       </div>
     </div>`;
 }
@@ -625,7 +672,7 @@ function updateImportButton() {
   if (!btn) return;
   const ready = pendingImport.filter((it) => it.include && it.catId);
   const missing = pendingImport.filter((it) => it.include && !it.catId).length;
-  const total = ready.reduce((sum, it) => sum + counted(it), 0);
+  const total = ready.reduce((sum, it) => sum + importAmount(it), 0);
   pendingImport.forEach((it, i) => {
     $sheetBody.querySelector(`.imp[data-i="${i}"] select`)?.classList.toggle('need', it.include && !it.catId);
   });
@@ -639,6 +686,14 @@ function onImportField(el) {
   const it = pendingImport[row.dataset.i];
   if (el.dataset.imp === 'include') it.include = el.checked;
   if (el.dataset.imp === 'split') it.split = el.checked;
+  if (el.dataset.imp === 'share') {
+    it.useShare = el.checked;
+    row.querySelector('.row-amt').textContent = fmtLeft(importAmount(it));
+  }
+  if (el.dataset.imp === 'date') {
+    if (el.value && el.value >= el.min) it.date = el.value;
+    else el.value = it.date;
+  }
   if (el.dataset.imp === 'cat') {
     it.catId = el.value || null;
     el.classList.toggle('empty', !it.catId);
@@ -662,6 +717,187 @@ document.getElementById('chase-file').addEventListener('change', async (ev) => {
   }
   importSheet(buildImport(txns));
 });
+
+// ---------- Shared Google Sheet ----------
+// Expected header (emoji and spacing don't matter):
+// name | Amount | Date of Purchase | Who Paid? | Split? | Rain's Share | Will's Share | Square? | Date Cleared
+// Only rows the other person paid for are imported, using your share column.
+
+const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets.readonly';
+const normHeader = (s) => String(s).toLowerCase().replace(/[^a-z]+/g, ' ').trim();
+const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const parseMoney = (s) => {
+  const n = Math.round(parseFloat(String(s).replace(/[$,\s]/g, '')) * 100);
+  return Number.isFinite(n) ? n : 0;
+};
+
+function parseSheetLink(url) {
+  const id = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/)?.[1];
+  return id ? { id, gid: url.match(/[#&?]gid=(\d+)/)?.[1] || null } : null;
+}
+
+function readSharedSheet(values) {
+  const headerRow = values.findIndex((r) => r.some((c) => normHeader(c) === 'amount') && r.some((c) => normHeader(c).endsWith(' share')));
+  if (headerRow < 0) return null;
+  const h = values[headerRow].map(normHeader);
+  const find = (test) => h.findIndex(test);
+  const cols = {
+    name: find((x) => ['name', 'item', 'description'].includes(x)),
+    amount: find((x) => x === 'amount'),
+    date: find((x) => x.includes('date of purchase') || x === 'date'),
+    paid: find((x) => x.includes('who paid')),
+    split: find((x) => x.startsWith('split')),
+  };
+  const shares = {}; // "Rain" -> column index
+  h.forEach((x, i) => {
+    const m = x.match(/^([a-z]+)(?: s)? share$/);
+    if (m) shares[capitalize(m[1])] = i;
+  });
+  if (cols.name < 0 || !Object.keys(shares).length) return null;
+  return { cols, shares, people: Object.keys(shares), rows: values.slice(headerRow + 1) };
+}
+
+function buildSheetImport({ cols, shares, rows }) {
+  const me = db.sheet.me;
+  const minDate = `${db.startMonth}-01`;
+  const imported = new Set(db.expenses.map((e) => e.importId).filter(Boolean));
+  const ignored = new Set(db.ignoredImports);
+  // importId is "date|sheet|name|share|n"; name+share spots a row whose date was changed in the sheet.
+  const importedByNameShare = new Set(
+    [...imported].filter((id) => id.includes('|sheet|')).map((id) => id.split('|').slice(2, -1).join('|'))
+  );
+  const manual = db.expenses.filter((e) => !e.importId);
+  const matched = new Set();
+  const occurrences = {};
+  const items = [];
+
+  for (const r of rows) {
+    const cell = (i) => (i >= 0 ? String(r[i] ?? '').trim() : '');
+    const name = cell(cols.name);
+    const total = parseMoney(cell(cols.amount));
+    const share = parseMoney(cell(shares[me]));
+    if (!name && !total && !share) continue;
+
+    const sheetDate = csvDateToISO(cell(cols.date));
+    const date = sheetDate || todayISO();
+    const base = `${date}|sheet|${name}|${share}`;
+    occurrences[base] = (occurrences[base] || 0) + 1;
+    const importId = `${base}|${occurrences[base]}`;
+    const payer = cell(cols.paid);
+    const paidByMe = normHeader(payer).split(' ').includes(me.toLowerCase());
+    const sub = [
+      payer && `${payer} paid`,
+      cell(cols.split) && `Split: ${cell(cols.split)}`,
+    ].filter(Boolean).join(' · ');
+    const item = { importId, source: 'sheet', date, desc: name || 'Shared expense', note: name || 'Shared expense',
+      amount: share, share, total, useShare: true, sub, catId: suggestCategory({ desc: name, chaseCat: '' }), split: false,
+      warn: '', skip: '', locked: false, include: false };
+
+    if (imported.has(importId)) Object.assign(item, { skip: 'Already imported', locked: true });
+    else if (share <= 0) Object.assign(item, { skip: 'Nothing for you to pay', locked: true });
+    else if (date < minDate) Object.assign(item, { skip: 'Before your history starts', locked: true });
+    else if (paidByMe) item.skip = 'You paid · should already be in Chase or your own entries';
+    else if (ignored.has(importId)) item.skip = 'You unchecked this in an earlier import';
+    if (item.skip) {
+      items.push(item);
+      continue;
+    }
+
+    const twin = manual.find((e) => !matched.has(e.id) && e.amount === share && daysApart(e.date, date) <= 2);
+    if (!sheetDate) item.warn = 'No purchase date in the sheet · set the date below';
+    else if (importedByNameShare.has(`${name}|${share}`)) item.warn = 'Already imported from the sheet with a different date';
+    else if (twin) {
+      matched.add(twin.id);
+      item.warn = 'Looks like one you already entered';
+    }
+    item.include = !item.warn && !!item.catId;
+    items.push(item);
+  }
+  items.sort((a, b) => b.date.localeCompare(a.date));
+  return items;
+}
+
+let pendingSheetValues = null;
+
+function reviewSharedSheet(values) {
+  const parsed = readSharedSheet(values);
+  if (!parsed) {
+    openSheet(`
+      <h2>Couldn't read the sheet</h2>
+      <p class="hint">Expected a header row with <b>name</b>, <b>Amount</b> and a <b>…'s Share</b> column for each person. If the sheet has several tabs, copy the link while the right tab is open.</p>
+      <button class="primary" data-action="close">OK</button>`);
+    return;
+  }
+  db.sheet.people = parsed.people;
+  save();
+  if (!parsed.people.includes(db.sheet.me)) {
+    pendingSheetValues = values;
+    openSheet(`
+      <h2>Which one are you?</h2>
+      <p class="hint">The app will use your share column. You can change this later in Settings.</p>
+      <div class="chips">${parsed.people.map((p) => `<button class="chip" data-action="pick-me" data-name="${esc(p)}">${esc(p)}</button>`).join('')}</div>`);
+    return;
+  }
+  importSheet(buildSheetImport(parsed));
+}
+
+// Google sign-in (Google Identity Services). The token lives in memory only and lasts about an hour.
+let googleLoading = null;
+let tokenClient = null;
+let accessToken = null;
+let tokenExpires = 0;
+
+function prepareGoogle() {
+  if (!GOOGLE_CLIENT_ID || tokenClient) return;
+  googleLoading ||= new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+  googleLoading
+    .then(() => {
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: SHEETS_SCOPE,
+        callback: (resp) => {
+          if (resp.error) return toast('Google sign-in failed');
+          accessToken = resp.access_token;
+          tokenExpires = Date.now() + (Number(resp.expires_in) - 60) * 1000;
+          syncSharedSheet();
+        },
+        error_callback: () => toast('Google sign-in was cancelled'),
+      });
+    })
+    .catch(() => {
+      googleLoading = null; // allow a retry, e.g. after coming back online
+    });
+}
+
+async function syncSharedSheet() {
+  const ref = parseSheetLink(db.sheet.url);
+  const api = `https://sheets.googleapis.com/v4/spreadsheets/${ref.id}`;
+  const get = async (url) => {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!res.ok) throw Object.assign(new Error('Sheets API error'), { status: res.status });
+    return res.json();
+  };
+  toast('Reading your sheet…');
+  try {
+    const meta = await get(`${api}?fields=sheets.properties(sheetId,title)`);
+    const tab = meta.sheets.find((s) => String(s.properties.sheetId) === ref.gid) || meta.sheets[0];
+    const range = `'${tab.properties.title.replace(/'/g, "''")}'`;
+    const data = await get(`${api}/values/${encodeURIComponent(range)}`);
+    reviewSharedSheet(data.values || []);
+  } catch (e) {
+    if (e.status === 401) accessToken = null;
+    const msg = e.status === 401 ? 'Your Google sign-in expired. Tap Sync again.'
+      : e.status === 403 || e.status === 404 ? "This Google account can't open that sheet. Check the link and that the sheet is shared with you."
+      : "Couldn't reach Google. Check your connection and try again.";
+    openSheet(`<h2>Sync failed</h2><p class="hint">${msg}</p><button class="primary" data-action="close">OK</button>`);
+  }
+}
 
 // ---------- Actions ----------
 
@@ -763,6 +999,33 @@ const actions = {
     commit(`${c.name} deleted`);
   },
   'import-chase': () => document.getElementById('chase-file').click(),
+  'sync-sheet'() {
+    if (!GOOGLE_CLIENT_ID) {
+      openSheet(`
+        <h2>Google sign-in isn't set up yet</h2>
+        <p class="hint">Add your Google Client ID to <b>app.js</b> (see the README), then upload it to GitHub.</p>
+        <button class="primary" data-action="close">OK</button>`);
+      return;
+    }
+    if (accessToken && Date.now() < tokenExpires) return syncSharedSheet();
+    if (!tokenClient) {
+      prepareGoogle();
+      return toast('Connecting to Google… tap Sync again in a moment');
+    }
+    tokenClient.requestAccessToken({ prompt: '' });
+  },
+  'pick-me'(el) {
+    db.sheet.me = el.dataset.name;
+    save();
+    render();
+    reviewSharedSheet(pendingSheetValues);
+  },
+  'set-me'(el) {
+    db.sheet.me = el.dataset.name;
+    save();
+    render();
+    toast(`Using ${db.sheet.me}'s share`);
+  },
   'do-import'() {
     const ready = pendingImport.filter((it) => it.include && it.catId);
     for (const it of pendingImport) {
@@ -774,6 +1037,7 @@ const actions = {
     ready.forEach((it, n) => db.expenses.push({
       id: uid(), createdAt: Date.now() + n, importId: it.importId,
       date: it.date, catId: it.catId, amount: it.amount, split: it.split, note: it.note,
+      ...(it.source === 'sheet' ? sheetExpenseAmount(it) : {}),
     }));
     pendingImport = null;
     commit(`Imported ${ready.length} expense${ready.length > 1 ? 's' : ''}`);
@@ -799,6 +1063,14 @@ document.addEventListener('input', onFieldChange);
 document.addEventListener('change', (ev) => {
   onFieldChange(ev);
   if (ev.target.dataset.imp) onImportField(ev.target);
+  if (ev.target.id === 'sheet-url') {
+    const url = ev.target.value.trim();
+    if (url && !parseSheetLink(url)) return toast("That doesn't look like a Google Sheets link");
+    db.sheet.url = url;
+    save();
+    render();
+    toast(url ? 'Sheet link saved' : 'Sheet link removed');
+  }
   if (ev.target.id === 'budget') {
     db.budget = parseAmount(ev.target.value);
     db.months[monthKey()].budget = db.budget;

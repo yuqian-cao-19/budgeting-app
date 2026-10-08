@@ -255,8 +255,15 @@ main {
 }
 .imp-ctrls select.empty { border-color: var(--line); color: var(--muted); }
 .imp-ctrls select.need { border-color: var(--warn); }
+.imp-date {
+  flex: none; width: 150px; min-height: 40px; padding: 0 8px; border: 0; border-radius: 10px;
+  background: var(--chip); font: inherit; font-size: 15px; color: inherit;
+}
+.me-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.me-row > span { color: var(--muted); font-weight: 600; margin-right: 4px; }
 .imp-split { display: flex; align-items: center; gap: 6px; font-size: 14px; white-space: nowrap; }
 .imp-split input { width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
+.imp-share { margin-top: 8px; white-space: normal; }
 /* Sticks over the panel's bottom padding so rows don't show beneath the button. */
 .sheet-footer {
   --pad: calc(env(safe-area-inset-bottom) + 18px);

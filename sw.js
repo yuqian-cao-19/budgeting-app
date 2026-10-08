@@ -1,6 +1,6 @@
 // Offline support: serve from cache, refresh the cache in the background.
 // Bump CACHE when you change files so phones pick up the new version.
-const CACHE = 'budget-v3';
+const CACHE = 'budget-v5';
 const ASSETS = [
   './',
   './index.html',
@@ -25,7 +25,8 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  if (event.request.method !== 'GET') return;
+  // Only cache the app's own files; never Google sign-in or your sheet data.
+  if (event.request.method !== 'GET' || new URL(event.request.url).origin !== self.location.origin) return;
   event.respondWith(
     caches.open(CACHE).then(async (cache) => {
       const cached = await cache.match(event.request, { ignoreSearch: true });
