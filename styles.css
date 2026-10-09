@@ -9,9 +9,9 @@
 
 /* Navy calm. Each color is light-dark(light value, dark value); the theme picks which one applies.
    Settings → Appearance sets data-theme on <html>: dark (default), light, or system (match phone). */
-:root, [data-theme="dark"] { color-scheme: dark; }
-[data-theme="light"] { color-scheme: light; }
-[data-theme="system"] { color-scheme: light dark; }
+:root, :root[data-theme="dark"] { color-scheme: dark; }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="system"] { color-scheme: light dark; }
 
 :root {
   --bg: light-dark(#f3f5fa, #0d1424);
@@ -226,6 +226,7 @@ main {
 /* ---------- Settle up ---------- */
 
 .settle-card { display: flex; align-items: center; gap: 12px; }
+.restore-hint { margin: -4px 0 10px; color: var(--accent); }
 .badge {
   display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 99px; vertical-align: 2px;
   background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 700;

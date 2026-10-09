@@ -316,7 +316,10 @@ function homeView() {
   const pending = unclosedMonth();
   const setup = !db.budget
     ? `<button class="card setup" data-action="go" data-view="settings">👋 Start by setting your monthly budget and fixed bills <span>›</span></button>`
-    : pending ? closeBanner(pending) : '';
+    : pending ? closeBanner(pending) : needsBackupReminder() ? backupBanner : '';
+  // A wiped or new phone: offer to bring a backup back.
+  const restoreHint = !db.budget && !db.expenses.length
+    ? '<button class="text-btn restore-hint" data-action="restore">Had data before? Restore from a backup</button>' : '';
 
   return `
     <header class="month-nav">
@@ -325,6 +328,7 @@ function homeView() {
       <button class="icon-btn" data-action="month" data-delta="1" ${isCurrent ? 'disabled' : ''} aria-label="Next month">›</button>
     </header>
     ${setup}
+    ${restoreHint}
     <div class="cols"><div class="col">
     <section class="card hero ${neg ? 'neg' : ''}">
       <div class="hero-label">${isCurrent ? 'Left to spend' : 'Left over'}</div>
@@ -605,10 +609,39 @@ function settingsView() {
           `<button class="chip ${db.theme === value ? 'on' : ''}" data-action="set-theme" data-theme="${value}">${label}</button>`).join('')}
       </div>
     </section>
+    ${backupCard()}
     <section class="card">
       <h2>Data</h2>
       <p class="hint">Everything is stored only on this device. Expenses older than ${KEEP_MONTHS} months are deleted automatically.</p>
       <button class="danger-btn" data-action="reset">Erase all data</button>
+    </section>`;
+}
+
+function backupCard() {
+  const meta = backupMeta();
+  const remind = meta.remind || 'open';
+  const last = meta.lastAt ? dayLabel(isoOf(new Date(meta.lastAt))) : 'never';
+  return `
+    <section class="card">
+      <h2>Backup</h2>
+      <p class="hint" style="margin:0 0 4px">Last backup: <b>${last}</b>. ${hasUnbackedChanges() ? "You've made changes since then." : 'Up to date.'}</p>
+      <button class="primary" data-action="backup-now">Back up now</button>
+      <button class="secondary" data-action="restore">Restore from a backup</button>
+      <label class="lbl">Remind me to back up</label>
+      <div class="chips">
+        ${[['open', 'When I open the app'], ['weekly', 'Weekly'], ['off', 'Off']].map(([value, label]) =>
+          `<button class="chip ${remind === value ? 'on' : ''}" data-action="set-backup-remind" data-remind="${value}">${label}</button>`).join('')}
+      </div>
+      ${IS_ANDROID ? `
+        <label class="switch-row">
+          <span><b>Save to Downloads automatically</b><span class="hint">When you open the app, at most once a day, if anything changed</span></span>
+          <input type="checkbox" id="auto-backup" ${meta.auto ? 'checked' : ''}>
+          <span class="switch"></span>
+        </label>` : ''}
+      <p class="hint">${IS_ANDROID
+        ? "Backups go to your Downloads folder, which clearing Chrome's data doesn't touch. Copy one to Google Drive now and then in case you lose the phone."
+        : 'When the share sheet opens, choose <b>Save to Files</b> and pick iCloud Drive.'}
+        A backup file has everything, so restoring it on any phone brings back your budget exactly.</p>
     </section>`;
 }
 
@@ -1006,6 +1039,117 @@ document.getElementById('chase-file').addEventListener('change', async (ev) => {
   importSheet(buildImport(txns));
 });
 
+// ---------- Backup ----------
+// Browser storage can be wiped (clearing Chrome's data, reinstalling), so the app can save everything to a
+// file you keep somewhere else. Backup bookkeeping lives under its own key so it isn't part of the backup.
+
+const BACKUP_KEY = 'budget-app-backup'; // { lastAt, hash, remind: 'open'|'weekly'|'off', auto, lastAuto }
+const IS_ANDROID = /Android/i.test(navigator.userAgent);
+const WEEK = 7 * 864e5;
+
+function backupMeta() {
+  try {
+    return JSON.parse(localStorage.getItem(BACKUP_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+const setBackupMeta = (changes) => localStorage.setItem(BACKUP_KEY, JSON.stringify({ ...backupMeta(), ...changes }));
+
+// A cheap fingerprint of your data, to tell whether anything changed since the last backup.
+function dataHash() {
+  const s = JSON.stringify(db);
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+
+const hasData = () => db.budget > 0 || db.expenses.length > 0 || db.funds.length > 0;
+const hasUnbackedChanges = () => hasData() && backupMeta().hash !== dataHash();
+
+function needsBackupReminder() {
+  const meta = backupMeta();
+  if (meta.remind === 'off' || !hasUnbackedChanges()) return false;
+  return meta.remind !== 'weekly' || !meta.lastAt || Date.now() - meta.lastAt > WEEK;
+}
+
+const backupBanner = `<button class="card setup" data-action="backup-now">💾 You have changes that aren't backed up. Back up now <span>›</span></button>`;
+
+function backupFile() {
+  const json = JSON.stringify({ app: 'budget', format: 1, savedAt: new Date().toISOString(), data: db });
+  return new File([json], `budget-backup-${todayISO()}.json`, { type: 'application/json' });
+}
+
+function downloadFile(file) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(file);
+  a.download = file.name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+const markBackedUp = (extra = {}) => setBackupMeta({ lastAt: Date.now(), hash: dataHash(), ...extra });
+
+// iPhone: the share sheet (Save to Files → iCloud Drive). Android: straight to Downloads.
+async function backupNow() {
+  const file = backupFile();
+  if (!IS_ANDROID && navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file] });
+    } catch (e) {
+      if (e.name === 'AbortError') return; // closed the share sheet without saving
+      downloadFile(file);
+    }
+  } else {
+    downloadFile(file);
+  }
+  markBackedUp();
+  render();
+  toast(IS_ANDROID ? 'Backup saved to Downloads' : 'Backup saved');
+}
+
+// Android only: save a backup on open, at most once a day, only if something changed.
+// Chrome allows this without a tap; iPhone doesn't, so iPhone gets the reminder banner instead.
+function autoBackup() {
+  const meta = backupMeta();
+  if (!IS_ANDROID || !meta.auto || !hasUnbackedChanges() || meta.lastAuto === todayISO()) return;
+  downloadFile(backupFile());
+  markBackedUp({ lastAuto: todayISO() });
+  toast('Backup saved to Downloads');
+}
+
+async function restoreFrom(file) {
+  let parsed = null;
+  try {
+    parsed = JSON.parse(await file.text());
+  } catch {}
+  const data = parsed?.app === 'budget' ? parsed.data : null;
+  if (!data || !Array.isArray(data.categories) || !Array.isArray(data.expenses) || typeof data.months !== 'object') {
+    openSheet(`
+      <h2>That isn't a Budget backup</h2>
+      <p class="hint">Pick a file named like <b>budget-backup-2026-10-09.json</b>.</p>
+      <button class="primary" data-action="close">OK</button>`);
+    return;
+  }
+  const when = new Date(parsed.savedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const what = `${data.expenses.length} expense${data.expenses.length === 1 ? '' : 's'}`;
+  if (!confirm(`Restore the backup from ${when} (${what})? This replaces everything currently on this phone.`)) return;
+  db = data;
+  startup();
+  markBackedUp({ lastAt: Date.parse(parsed.savedAt) || Date.now() });
+  ui.view = 'home';
+  ui.month = monthKey();
+  commit('Backup restored');
+}
+
+document.getElementById('restore-file').addEventListener('change', (ev) => {
+  const file = ev.target.files[0];
+  ev.target.value = ''; // so picking the same file again still fires
+  if (file) restoreFrom(file);
+});
+
 // ---------- Settle up ----------
 // Each of you logs what you paid for, marking shared things Split. To settle a month, one phone shows a
 // code (QR or link) listing its split expenses and the other reads it. Every split expense is assumed to be
@@ -1013,6 +1157,7 @@ document.getElementById('chase-file').addEventListener('change', async (ev) => {
 // The code goes straight from phone to phone; nothing is uploaded.
 
 const SETTLE_QR_LIMIT = 2900; // bytes a QR code can hold at low error correction
+const SETTLE_QR_EASY = 900; // above this the code gets dense enough that phone cameras can struggle
 const settle = { month: null, view: 'home', partner: null };
 let scanStream = null;
 
@@ -1167,6 +1312,7 @@ function renderSettle() {
       <h2>Your code</h2>
       <p class="hint" style="margin-top:0">On your partner's phone: <b>History → Settle up → Scan partner's code</b>.</p>
       <div class="qr-box" id="qr-box"><span class="hint">Making your code…</span></div>
+      <p class="hint" id="qr-note"></p>
       <button class="secondary" data-action="settle-share">Send as a link instead</button>
       <button class="text-btn" data-action="settle-back">Back</button>`);
     showQR();
@@ -1257,6 +1403,10 @@ async function showQR() {
     qr.addData(code);
     qr.make();
     box.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 4, scalable: true });
+    // Measured: up to ~50 split expenses (~900 characters) scans reliably from a phone screen.
+    if (code.length > SETTLE_QR_EASY) {
+      document.getElementById('qr-note').innerHTML = "That's a lot of expenses, so this code is dense. If it won't scan, turn up the brightness or use <b>Send as a link</b>.";
+    }
   } catch {
     box.innerHTML = "<span class=\"hint\">Couldn't make a code. Try <b>Send as a link</b>.</span>";
   }
@@ -1509,6 +1659,12 @@ const actions = {
     const next = unclosedMonth();
     if (next) closeMonthSheet(next);
   },
+  'backup-now': () => backupNow(),
+  restore: () => document.getElementById('restore-file').click(),
+  'set-backup-remind'(el) {
+    setBackupMeta({ remind: el.dataset.remind });
+    render();
+  },
   'open-settle': () => openSettle(),
   'view-settlement': (el) => settlementSheet(el.dataset.month),
   'settle-month'(el) {
@@ -1616,6 +1772,16 @@ document.addEventListener('input', onFieldChange);
 document.addEventListener('change', (ev) => {
   onFieldChange(ev);
   if (ev.target.dataset.imp) onImportField(ev.target);
+  if (ev.target.id === 'auto-backup') {
+    setBackupMeta({ auto: ev.target.checked });
+    // Save one right away: this tap also lets Chrome allow the automatic ones later.
+    if (ev.target.checked) {
+      downloadFile(backupFile());
+      markBackedUp({ lastAuto: todayISO() });
+      render();
+    }
+    toast(ev.target.checked ? 'Backup saved to Downloads. Future ones happen on their own.' : 'Automatic backups off');
+  }
   if (ev.target.id === 'budget') {
     db.budget = parseAmount(ev.target.value);
     db.months[monthKey()].budget = db.budget;
@@ -1663,6 +1829,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && !$sheet.classList.contains('open')) {
     startup();
     render();
+    autoBackup();
     promptCloseOut();
   }
 });
@@ -1671,6 +1838,7 @@ document.addEventListener('visibilitychange', () => {
 
 startup();
 render();
+autoBackup();
 handleSettleLink(); // a shared settle-up link wins over the month-end prompt
 promptCloseOut();
 

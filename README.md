@@ -64,6 +64,17 @@ Apart? Tap **Send as a link** and share it through Messages or WhatsApp. The oth
 
 The code holds only that month's split expenses (date, amount, category, note) and goes straight from one phone to the other. QR codes are drawn and read by two small open-source libraries in `lib/`.
 
+## Backup and restore
+
+Your data lives in the browser's storage on each phone. Clearing the browser's data, reinstalling the app, or losing the phone erases it, so keep backups.
+
+- **Settings → Backup → Back up now** saves everything to a file named like `budget-backup-2026-10-09.json`.
+  - **iPhone:** the share sheet opens. Choose **Save to Files** and pick **iCloud Drive**.
+  - **Android:** it's saved to the **Downloads** folder.
+- **Reminders:** when you open the app with changes that aren't backed up, a one-tap banner appears on Home. Change this to **Weekly** or **Off** in Settings.
+- **Android only, automatic:** turn on **Save to Downloads automatically** and the app saves a backup when you open it, at most once a day and only if something changed. iPhones don't let web apps save files without a tap, so iPhone gets the reminder banner instead.
+- **Restore:** **Settings → Backup → Restore from a backup**, then pick the file. On an empty phone, Home also shows **Restore from a backup**. Restoring replaces everything on that phone with the backup.
+
 ## Good to know
 
 - Data lives in the app's local storage on each phone. Two phones won't sync with each other.
