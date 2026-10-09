@@ -68,11 +68,11 @@ The code holds only that month's split expenses (date, amount, category, note) a
 
 Your data lives in the browser's storage on each phone. Clearing the browser's data, reinstalling the app, or losing the phone erases it, so keep backups.
 
-- **Settings → Backup → Back up now** saves everything to a file named like `budget-backup-2026-10-09.json`.
-  - **iPhone:** the share sheet opens. Choose **Save to Files** and pick **iCloud Drive**.
-  - **Android:** it's saved to the **Downloads** folder.
+- **Settings → Backup → Back up now** saves everything to one file, always named `budget-app-backup.json`.
+  - **Android (Chrome):** tap **Choose a backup file** once and pick a spot, like Downloads or Google Drive. Every backup after that updates that same file. If your Chrome doesn't offer this, backups go to Downloads, where Chrome adds (1), (2) and so on to repeat names.
+  - **iPhone:** the share sheet opens. Choose **Save to Files** and the same iCloud Drive folder each time. Files asks about the existing backup, and you tap **Replace** to update it. iPhones don't let web apps overwrite files without that tap.
 - **Reminders:** when you open the app with changes that aren't backed up, a one-tap banner appears on Home. Change this to **Weekly** or **Off** in Settings.
-- **Android only, automatic:** turn on **Save to Downloads automatically** and the app saves a backup when you open it, at most once a day and only if something changed. iPhones don't let web apps save files without a tap, so iPhone gets the reminder banner instead.
+- **Automatic (Android):** turn on **Back up automatically**. With a backup file chosen, the app updates it each time you open the app and something changed. Without one, it saves to Downloads at most once a day. iPhone gets the reminder banner instead.
 - **Restore:** **Settings → Backup → Restore from a backup**, then pick the file. On an empty phone, Home also shows **Restore from a backup**. Restoring replaces everything on that phone with the backup.
 
 ## Good to know

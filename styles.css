@@ -227,6 +227,9 @@ main {
 
 .settle-card { display: flex; align-items: center; gap: 12px; }
 .restore-hint { margin: -4px 0 10px; color: var(--accent); }
+.backup-file { margin: 0 0 4px; color: var(--muted); font-size: 14px; }
+.backup-file b { color: var(--text); }
+.link-btn { color: var(--accent); font-weight: 650; }
 .badge {
   display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 99px; vertical-align: 2px;
   background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 700;
