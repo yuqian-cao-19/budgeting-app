@@ -53,25 +53,38 @@ def pixel(x, y):
     return BG
 
 
-def render(size):
+def render(size, transparent=False, scale=1.0):
+    """PNG bytes. transparent: navy becomes see-through (Android's icon foreground layer).
+    scale: shrink the drawing toward the center to fit Android's safe zone."""
     rows = []
     for py in range(size):
         row = bytearray([0])
         for px in range(size):
-            acc = [0, 0, 0]
+            acc = [0, 0, 0, 0]
             for sy in range(SS):
                 for sx in range(SS):
-                    c = pixel((px + (sx + 0.5) / SS) / size, (py + (sy + 0.5) / SS) / size)
+                    x = .5 + ((px + (sx + 0.5) / SS) / size - .5) / scale
+                    y = .5 + ((py + (sy + 0.5) / SS) / size - .5) / scale
+                    c = pixel(x, y)
+                    if transparent and c == BG:
+                        continue  # stays fully transparent
                     for i in range(3):
                         acc[i] += c[i]
-            row += bytes(round(v / (SS * SS)) for v in acc)
+                    acc[3] += 255
+            n = SS * SS
+            if transparent:
+                covered = acc[3] / 255
+                rgb = [round(acc[i] / covered) if covered else 0 for i in range(3)]
+                row += bytes(rgb + [round(acc[3] / n)])
+            else:
+                row += bytes(round(acc[i] / n) for i in range(3))
         rows.append(bytes(row))
     raw = zlib.compress(b"".join(rows), 9)
 
     def chunk(tag, data):
         return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data))
 
-    ihdr = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
+    ihdr = struct.pack(">IIBBBBB", size, size, 8, 6 if transparent else 2, 0, 0, 0)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", raw) + chunk(b"IEND", b"")
 
 
@@ -79,3 +92,15 @@ here = Path(__file__).parent
 for s in (180, 192, 512):
     (here / f"icon-{s}.png").write_bytes(render(s))
     print(f"icon-{s}.png")
+
+# Android app icons, if the Android project exists. The launcher crops the layered icon to its own shape
+# and only guarantees the middle 66 of 108 units, so the foreground drawing is shrunk to fit inside that.
+res = here.parent / "android/app/src/main/res"
+if res.exists():
+    for density, launcher, layer in [("mdpi", 48, 108), ("hdpi", 72, 162), ("xhdpi", 96, 216),
+                                     ("xxhdpi", 144, 324), ("xxxhdpi", 192, 432)]:
+        folder = res / f"mipmap-{density}"
+        (folder / "ic_launcher.png").write_bytes(render(launcher))
+        (folder / "ic_launcher_round.png").write_bytes(render(launcher))
+        (folder / "ic_launcher_foreground.png").write_bytes(render(layer, transparent=True, scale=0.62))
+        print(f"android {density}")

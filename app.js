@@ -93,7 +93,33 @@ function load() {
   return freshDb();
 }
 
-const save = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
+// Running inside the Android app (Capacitor) rather than a browser. Native features are reached
+// through Capacitor's plugins: WidgetBridge (ours, see android/), Filesystem, and Share.
+const NATIVE = !!window.Capacitor?.isNativePlatform?.();
+const Native = window.Capacitor?.Plugins || {};
+
+function save() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
+  updateWidget();
+}
+
+// Hands this month's numbers to the home-screen widget, so it always matches the app.
+function updateWidget() {
+  if (!NATIVE || !Native.WidgetBridge || !db.months?.[monthKey()]) return;
+  const key = monthKey();
+  const s = stats(key);
+  Native.WidgetBridge.update({
+    month: key,
+    monthName: monthLabel(key).split(' ')[0],
+    left: s.remaining - savingsTargets(), // same as the big number on Home
+    budget: s.budget + s.carry,
+    spent: s.spent,
+    showBudget: db.widget.budget,
+    showSpent: db.widget.spent,
+    showPerDay: db.widget.perDay,
+    showDaysLeft: db.widget.daysLeft,
+  }).catch(() => {});
+}
 
 let db = load();
 
@@ -253,6 +279,7 @@ function startup() {
   db.deviceId ||= uid(); // tells your own settle-up code apart from your partner's
   db.myName ||= '';
   db.settlements ||= {}; // 'YYYY-MM' -> { date, partner, net, mine, theirs, mineItems, theirItems }
+  db.widget ||= { budget: true, spent: true, perDay: false, daysLeft: false }; // Android widget extras
   applyTheme();
   delete db.sheet; // left over from the removed Google Sheet sync
   if (!db.funds) {
@@ -609,11 +636,26 @@ function settingsView() {
           `<button class="chip ${db.theme === value ? 'on' : ''}" data-action="set-theme" data-theme="${value}">${label}</button>`).join('')}
       </div>
     </section>
+    ${NATIVE ? widgetCard() : ''}
     ${backupCard()}
     <section class="card">
       <h2>Data</h2>
       <p class="hint">Everything is stored only on this device. Expenses older than ${KEEP_MONTHS} months are deleted automatically.</p>
       <button class="danger-btn" data-action="reset">Erase all data</button>
+    </section>`;
+}
+
+// Android app only: which extras the home-screen widget shows besides Left to spend.
+function widgetCard() {
+  const opts = [['budget', 'Budget'], ['spent', 'Spent'], ['perDay', '~$/day'], ['daysLeft', 'Days left']];
+  return `
+    <section class="card">
+      <h2>Home-screen widget</h2>
+      <p class="hint" style="margin:0 0 8px">Always shows Left to spend. Also show:</p>
+      <div class="chips">
+        ${opts.map(([key, label]) => `<button class="chip ${db.widget[key] ? 'on' : ''}" data-action="toggle-widget" data-key="${key}">${label}</button>`).join('')}
+      </div>
+      <p class="hint">Budget and Spent appear when the widget is at least 3 squares wide. To add it, long-press your home screen, tap <b>Widgets</b>, and find <b>Budget</b>.</p>
     </section>`;
 }
 
@@ -636,19 +678,23 @@ function backupCard() {
         ${[['open', 'When I open the app'], ['weekly', 'Weekly'], ['off', 'Off']].map(([value, label]) =>
           `<button class="chip ${remind === value ? 'on' : ''}" data-action="set-backup-remind" data-remind="${value}">${label}</button>`).join('')}
       </div>
-      ${CAN_PICK_FILE || IS_ANDROID ? `
+      ${NATIVE || CAN_PICK_FILE || IS_ANDROID ? `
         <label class="switch-row">
-          <span><b>Back up automatically</b><span class="hint">${meta.fileName
-            ? 'Updates your backup file each time you open the app, if anything changed'
-            : 'Saves to Downloads when you open the app, at most once a day, if anything changed'}</span></span>
-          <input type="checkbox" id="auto-backup" ${meta.auto ? 'checked' : ''}>
+          <span><b>Back up automatically</b><span class="hint">${NATIVE
+            ? `Updates <b>${NATIVE_BACKUP_PATH}</b> each time you open the app, if anything changed`
+            : meta.fileName
+              ? 'Updates your backup file each time you open the app, if anything changed'
+              : 'Saves to Downloads when you open the app, at most once a day, if anything changed'}</span></span>
+          <input type="checkbox" id="auto-backup" ${(NATIVE ? meta.auto !== false : meta.auto) ? 'checked' : ''}>
           <span class="switch"></span>
         </label>` : ''}
-      <p class="hint">${CAN_PICK_FILE
-        ? "Pick a spot that clearing Chrome's data doesn't touch, like Downloads or Google Drive."
-        : IS_ANDROID
-          ? "Backups go to your Downloads folder, which clearing Chrome's data doesn't touch."
-          : `When the share sheet opens, choose <b>Save to Files</b> and the same iCloud Drive folder each time. Files will ask about the existing <b>${BACKUP_NAME}</b>: tap <b>Replace</b> to update it.`}
+      <p class="hint">${NATIVE
+        ? 'The backup stays in your Documents folder even if the app is deleted. Copy it to Google Drive now and then in case you lose the phone.'
+        : CAN_PICK_FILE
+          ? "Pick a spot that clearing Chrome's data doesn't touch, like Downloads or Google Drive."
+          : IS_ANDROID
+            ? "Backups go to your Downloads folder, which clearing Chrome's data doesn't touch."
+            : `When the share sheet opens, choose <b>Save to Files</b> and the same iCloud Drive folder each time. Files will ask about the existing <b>${BACKUP_NAME}</b>: tap <b>Replace</b> to update it.`}
         A backup has everything, so restoring it on any phone brings back your budget exactly.</p>
     </section>`;
 }
@@ -1086,7 +1132,8 @@ const backupBanner = `<button class="card setup" data-action="backup-now">💾 Y
 // Always the same name, so saving to the same folder replaces the previous backup.
 const BACKUP_NAME = 'budget-app-backup.json';
 // Chrome's file access: pick a file once, then the app can keep rewriting it. iPhone Safari doesn't have it.
-const CAN_PICK_FILE = 'showSaveFilePicker' in window;
+// (The Android app's web view lists this feature but can't use it; it backs up to Documents instead.)
+const CAN_PICK_FILE = 'showSaveFilePicker' in window && !NATIVE;
 
 const backupJson = () => JSON.stringify({ app: 'budget', format: 1, savedAt: new Date().toISOString(), data: db });
 const backupFile = () => new File([backupJson()], BACKUP_NAME, { type: 'application/json' });
@@ -1145,9 +1192,25 @@ function downloadFile(file) {
 
 const markBackedUp = (extra = {}) => setBackupMeta({ lastAt: Date.now(), hash: dataHash(), ...extra });
 
-// With a chosen file: overwrite it. iPhone: the share sheet (Save to Files → iCloud Drive; tap Replace).
-// Otherwise: a download.
+// Android app: one file in the phone's public Documents folder, rewritten each time. It stays put if the app
+// is uninstalled or its storage cleared, so a restore can always find it.
+const NATIVE_BACKUP_PATH = `Documents/${BACKUP_NAME}`;
+async function nativeBackup(silent) {
+  try {
+    await Native.Filesystem.writeFile({ path: BACKUP_NAME, data: backupJson(), directory: 'DOCUMENTS', encoding: 'utf8' });
+  } catch {
+    if (!silent) toast("Couldn't save the backup. Check the app's storage permission in Android settings.");
+    return;
+  }
+  markBackedUp();
+  render();
+  if (!silent) toast(`Backup saved: ${NATIVE_BACKUP_PATH}`);
+}
+
+// Android app: Documents. With a chosen file (Chrome): overwrite it. iPhone: the share sheet
+// (Save to Files → iCloud Drive; tap Replace). Otherwise: a download.
 async function backupNow() {
+  if (NATIVE) return nativeBackup(false);
   const handle = await getBackupHandle();
   if (handle) {
     try {
@@ -1181,6 +1244,8 @@ async function backupNow() {
 // one, save to Downloads at most once a day. iPhone can't do either without a tap, so it gets the banner.
 async function autoBackup() {
   const meta = backupMeta();
+  // The Android app backs up automatically unless it's been switched off; it's free there (one file, no taps).
+  if (NATIVE && meta.auto !== false && hasUnbackedChanges()) return nativeBackup(true);
   if (!meta.auto || !hasUnbackedChanges()) return;
   const handle = await getBackupHandle();
   if (handle) {
@@ -1305,7 +1370,9 @@ async function decodeSettle(text) {
   };
 }
 
-const settleLink = (code) => `${location.origin}${location.pathname}#settle=${code}`;
+// Inside the Android app the page lives at localhost, so links point at the public web app instead.
+const PUBLIC_URL = 'https://yuqian-cao-19.github.io/budgeting-app/';
+const settleLink = (code) => `${NATIVE ? PUBLIC_URL : location.origin + location.pathname}#settle=${code}`;
 
 function settleRow([day, amount, emoji, name, note], key) {
   const [y, m] = key.split('-').map(Number);
@@ -1555,9 +1622,10 @@ async function receiveCode(text) {
 async function shareSettle() {
   const link = settleLink(await encodeSettle());
   const text = `My split expenses for ${monthLabel(settle.month)}. In Budget, go to History → Settle up → Paste a code, and paste this link:\n${link}`;
-  if (navigator.share) {
+  const share = NATIVE ? Native.Share?.share : navigator.share?.bind(navigator);
+  if (share) {
     try {
-      await navigator.share({ text });
+      await share({ text });
     } catch {} // closing the share sheet isn't an error
   } else {
     await navigator.clipboard.writeText(link);
@@ -1737,6 +1805,11 @@ const actions = {
     const next = unclosedMonth();
     if (next) closeMonthSheet(next);
   },
+  'toggle-widget'(el) {
+    db.widget[el.dataset.key] = !db.widget[el.dataset.key];
+    save(); // also refreshes the widget
+    render();
+  },
   'backup-now': () => backupNow(),
   'choose-backup-file': () => chooseBackupFile(),
   restore: () => document.getElementById('restore-file').click(),
@@ -1855,7 +1928,7 @@ document.addEventListener('change', (ev) => {
     setBackupMeta({ auto: ev.target.checked });
     // Back up right away. Doing it during this tap also gets Chrome's permission for the later automatic ones.
     if (!ev.target.checked) toast('Automatic backups off');
-    else if (backupMeta().fileName) backupNow();
+    else if (NATIVE || backupMeta().fileName) backupNow();
     else if (CAN_PICK_FILE) chooseBackupFile(); // one file to keep updating beats a pile of copies
     else {
       downloadFile(backupFile());
@@ -1924,8 +1997,9 @@ autoBackup();
 handleSettleLink(); // a shared settle-up link wins over the month-end prompt
 promptCloseOut();
 
-// Offline caching is skipped on localhost so local previews always show your latest edits.
-if ('serviceWorker' in navigator && location.protocol === 'https:') {
+// Offline caching is skipped on localhost so local previews always show your latest edits,
+// and in the Android app, which has its files built in.
+if ('serviceWorker' in navigator && location.protocol === 'https:' && !NATIVE) {
   navigator.serviceWorker.register('sw.js');
 }
 navigator.storage?.persist?.();

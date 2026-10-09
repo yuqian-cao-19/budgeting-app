@@ -1,0 +1,19 @@
+{
+  "name": "budgeting-app",
+  "private": true,
+  "description": "Budget: the web app (repo root, served by GitHub Pages) and its Android app (android/, built with Capacitor).",
+  "scripts": {
+    "build:web": "node scripts/copy-web.mjs",
+    "sync": "npm run build:web && npx cap sync android",
+    "apk": "npm run sync && cd android && JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew assembleRelease && echo \"\nApp file: android/app/build/outputs/apk/release/app-release.apk\""
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/core": "^8.5.3",
+    "@capacitor/filesystem": "^8.1.4",
+    "@capacitor/share": "^8.0.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.3"
+  }
+}

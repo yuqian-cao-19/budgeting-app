@@ -88,6 +88,39 @@ Your data lives in the browser's storage on each phone. Clearing the browser's d
 
 Upload the changed files to the repo again. Also bump the `CACHE` value in `sw.js` (for example `budget-v2` → `budget-v3`) so phones download the new version. The update shows up the second time you open the app.
 
+## Android app (with a home-screen widget)
+
+The same web app also ships as a real Android app, built with [Capacitor](https://capacitorjs.com). It adds:
+
+- **Storage that's separate from Chrome.** Clearing Chrome or using another browser doesn't touch it. Uninstalling the app does, so backups still matter.
+- **A home-screen widget:** Left to spend, plus Budget and Spent when it's 3+ squares wide. Settings → **Home-screen widget** adds ~$/day and days left. The widget updates whenever the app saves, and recalculates ~$/day daily.
+- **Automatic backups** to `Documents/budget-app-backup.json`. One file, updated each time you open the app if anything changed. It stays even if the app is deleted.
+
+How it's laid out: the web app stays in the repo root (GitHub Pages serves it as before). `android/` is the Android project, including the widget (`android/app/src/main/java/.../BudgetWidget.java`). `scripts/copy-web.mjs` copies the web files into the Android app at build time.
+
+### Build it
+
+Needs Node.js, Android Studio (for the Android SDK), and Java 21. Then:
+
+```bash
+npm install
+npm run apk
+```
+
+The app file ends up at `android/app/build/outputs/apk/release/app-release.apk`.
+
+### Install or update it on the phone
+
+1. Send the `.apk` file to the phone (Google Drive, email, or USB).
+2. Tap it. The first time, Android asks to allow installs from that app (Files, Chrome or Drive). Allow it.
+3. Updates: build a new `.apk` and install it the same way. Android asks "Update this app?" and keeps the data.
+
+**Moving from the web app:** in the web app, **Back up now**. Install the Android app, then **Restore from a backup** and pick that file.
+
+### The signing key: don't lose it
+
+Every update must be signed with the same key, or Android won't install it over the existing app. You'd have to uninstall, which erases the data. The key is **not** in the repo. It lives in `~/budget-app-signing/` (`budget-release.jks` plus `keystore.properties` with its password). Back up that folder somewhere safe, like a password manager or an encrypted drive.
+
 ## Run locally
 
 ```bash

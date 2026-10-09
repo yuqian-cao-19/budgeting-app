@@ -1,0 +1,12 @@
+node_modules/
+www/
+.DS_Store
+# Android build output and local machine settings
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties
+android/.idea/
+# Never commit the signing key or its passwords
+*.jks
+keystore.properties
