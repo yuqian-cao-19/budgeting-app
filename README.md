@@ -49,6 +49,21 @@ How it works:
 
 Fund balances are kept indefinitely. Only their month-by-month history is trimmed to the last 12 months.
 
+## Settle up with your partner
+
+If you both use the app, it can work out who owes whom at the end of the month. Every expense marked **Split** counts as shared with your partner, and only the person who paid logs it.
+
+1. Both of you open **History → Settle up** and pick the month.
+2. One phone taps **Show my code**. The other taps **Scan partner's code** and points the camera at it. Then swap, so both phones see the result.
+3. You'll see the total, e.g. "Will owes you $10.00", plus every split expense from both of you so you can check it.
+4. Tap **Mark as settled** to save it. If split expenses for that month change afterwards, the app tells you to settle again.
+
+Settled months get a **Settled** tag in the History list. The **Settle-ups** log on the History tab lists every settlement, like "September 2026 · Will paid you · $17.50". Tap one to see the full breakdown from that day: both people's split expenses, each half, and the total.
+
+Apart? Tap **Send as a link** and share it through Messages or WhatsApp. The other person copies it and uses **Paste a code** in the app. On iPhone, a link tapped in Messages opens Safari, which keeps separate data from the home-screen app, so the page shows a **Copy code** button to paste into the app.
+
+The code holds only that month's split expenses (date, amount, category, note) and goes straight from one phone to the other. QR codes are drawn and read by two small open-source libraries in `lib/`.
+
 ## Good to know
 
 - Data lives in the app's local storage on each phone. Two phones won't sync with each other.

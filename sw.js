@@ -1,6 +1,6 @@
 // Offline support: serve from cache, refresh the cache in the background.
 // Bump CACHE when you change files so phones pick up the new version.
-const CACHE = 'budget-v15';
+const CACHE = 'budget-v17';
 const ASSETS = [
   './',
   './index.html',
@@ -11,6 +11,8 @@ const ASSETS = [
   './icons/icon-192.png',
   './icons/icon-512.png',
   './fonts/figtree.woff2',
+  './lib/qrcode.js', // settle up: draws QR codes
+  './lib/jsQR.js', // settle up: reads QR codes from the camera
 ];
 
 self.addEventListener('install', (event) => {

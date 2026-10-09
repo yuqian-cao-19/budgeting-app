@@ -203,6 +203,7 @@ function prune() {
   db.startMonth = cutoff;
   db.startCarry = carry;
   db.ignoredImports = db.ignoredImports.filter((id) => id.slice(0, 7) >= cutoff); // ids start with the date
+  for (const k of Object.keys(db.settlements || {})) if (k < cutoff) delete db.settlements[k];
 
   const used = new Set(db.expenses.map((e) => e.catId));
   Object.values(db.months).forEach((m) => Object.keys(m.fixed).forEach((id) => used.add(id)));
@@ -249,6 +250,9 @@ function startup() {
   db.rules ||= {};
   db.ignoredImports ||= [];
   db.theme ||= 'dark';
+  db.deviceId ||= uid(); // tells your own settle-up code apart from your partner's
+  db.myName ||= '';
+  db.settlements ||= {}; // 'YYYY-MM' -> { date, partner, net, mine, theirs, mineItems, theirItems }
   applyTheme();
   delete db.sheet; // left over from the removed Google Sheet sync
   if (!db.funds) {
@@ -417,16 +421,50 @@ function historyView() {
     rows.push(`
       <button class="row" data-action="open-month" data-month="${k}">
         <span class="row-main">
-          <span class="row-title">${monthLabel(k)}</span>
+          <span class="row-title">${monthLabel(k)}${db.settlements[k] ? ' <span class="badge">Settled</span>' : ''}</span>
           <span class="row-sub">Spent ${fmt(s.spent)} · Fixed ${fmt(s.fixed)}${s.saved ? ` · Saved ${fmt(s.saved)}` : ''}</span>
         </span>
         <span class="row-amt ${left < 0 ? 'neg' : 'pos'}">${fmtLeft(left)}<span class="row-sub">${left < 0 ? 'over' : 'left'}</span></span>
         <span class="chev">›</span>
       </button>`);
   }
+  const month = defaultSettleMonth();
+  const done = db.settlements[month];
+  const status = done
+    ? `${monthLabel(month)} settled: ${settledText(done)}`
+    : `You paid ${fmt(splitItems(month).reduce((sum, [, a]) => sum + a, 0))} in split expenses in ${monthLabel(month)}`;
   return `
     <header class="page-head"><h1>History</h1><p>The last ${KEEP_MONTHS} months are kept on this device.</p></header>
+    <button class="card settle-card" data-action="open-settle">
+      <span class="emoji">🤝</span>
+      <span class="row-main"><span class="row-title">Settle up with your partner</span><span class="row-sub">${status}</span></span>
+      <span class="chev">›</span>
+    </button>
+    ${settleLogCard()}
     <section class="card">${rows.join('')}</section>`;
+}
+
+// Every saved settle-up, newest first. Tap one to see the breakdown from that day.
+function settleLogCard() {
+  const months = Object.keys(db.settlements).sort().reverse();
+  if (!months.length) return '';
+  return `
+    <section class="card">
+      <h2>Settle-ups</h2>
+      ${months.map((k) => {
+        const rec = db.settlements[k];
+        const who = !rec.net ? 'Even' : rec.net > 0 ? `${esc(rec.partner)} paid you` : `You paid ${esc(rec.partner)}`;
+        return `
+          <button class="row" data-action="view-settlement" data-month="${k}">
+            <span class="row-main">
+              <span class="row-title">${monthLabel(k)}</span>
+              <span class="row-sub">${who} · settled ${dayLabel(rec.date).replace(/^(Today|Yesterday)$/, (d) => d.toLowerCase())}</span>
+            </span>
+            <span class="row-amt ${rec.net < 0 ? 'neg' : ''}">${rec.net ? fmt(Math.abs(rec.net)) : '—'}</span>
+            <span class="chev">›</span>
+          </button>`;
+      }).join('')}
+    </section>`;
 }
 
 const closeBanner = (key) =>
@@ -588,6 +626,7 @@ function openSheet(html, focusId) {
 }
 
 function closeSheet() {
+  stopScan(); // the settle-up camera, if it's on
   document.activeElement?.blur();
   $sheet.classList.remove('open');
   $sheet.setAttribute('aria-hidden', 'true');
@@ -967,6 +1006,354 @@ document.getElementById('chase-file').addEventListener('change', async (ev) => {
   importSheet(buildImport(txns));
 });
 
+// ---------- Settle up ----------
+// Each of you logs what you paid for, marking shared things Split. To settle a month, one phone shows a
+// code (QR or link) listing its split expenses and the other reads it. Every split expense is assumed to be
+// shared with your partner, so they owe you the other half of each one, and you owe them the same for theirs.
+// The code goes straight from phone to phone; nothing is uploaded.
+
+const SETTLE_QR_LIMIT = 2900; // bytes a QR code can hold at low error correction
+const settle = { month: null, view: 'home', partner: null };
+let scanStream = null;
+
+// Your share of a split expense is counted() (half, rounded); the other person owes the rest.
+const otherHalf = (amount) => amount - Math.round(amount / 2);
+
+// A month's split expenses as compact rows: [day, full amount, emoji, category, note].
+const splitItems = (key) => expensesIn(key)
+  .filter((e) => e.split)
+  .sort((a, b) => a.date.localeCompare(b.date))
+  .map((e) => [Number(e.date.slice(8)), e.amount, cat(e.catId).emoji, cat(e.catId).name, e.note || '']);
+
+// Early in a month you're usually settling the one that just ended.
+function defaultSettleMonth() {
+  const prev = addMonths(monthKey(), -1);
+  return new Date().getDate() <= 7 && prev >= db.startMonth ? prev : monthKey();
+}
+
+function settledText(rec) {
+  if (!rec.net) return `you and ${esc(rec.partner)} were even`;
+  return rec.net > 0 ? `${esc(rec.partner)} paid you ${fmt(rec.net)}` : `you paid ${esc(rec.partner)} ${fmt(-rec.net)}`;
+}
+
+function loadScript(src) {
+  loadScript.cache ||= {};
+  return (loadScript.cache[src] ||= new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => {
+      delete loadScript.cache[src];
+      reject(new Error(`Couldn't load ${src}`));
+    };
+    document.head.appendChild(s);
+  }));
+}
+
+// Code format: "B1." + base64url(deflate(JSON)), or "B0." uncompressed where compression isn't available.
+const toB64url = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const fromB64url = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+const pipeBytes = async (bytes, stream) => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
+
+async function encodeSettle() {
+  const json = JSON.stringify({ v: 1, id: db.deviceId, name: db.myName, m: settle.month, items: splitItems(settle.month) });
+  const bytes = new TextEncoder().encode(json);
+  if (!window.CompressionStream) return `B0.${toB64url(bytes)}`;
+  return `B1.${toB64url(await pipeBytes(bytes, new CompressionStream('deflate-raw')))}`;
+}
+
+// Accepts a bare code, a link containing one, or a pasted message. Everything is validated and trimmed,
+// because the code comes from outside the app.
+async function decodeSettle(text) {
+  const m = String(text).match(/B([01])\.([A-Za-z0-9_-]+)/);
+  if (!m) return null;
+  let bytes = fromB64url(m[2]);
+  if (m[1] === '1') bytes = await pipeBytes(bytes, new DecompressionStream('deflate-raw'));
+  const p = JSON.parse(new TextDecoder().decode(bytes));
+  if (p?.v !== 1 || !/^\d{4}-\d{2}$/.test(p.m) || !Array.isArray(p.items)) return null;
+  return {
+    id: String(p.id || ''),
+    name: String(p.name || 'Your partner').trim().slice(0, 30) || 'Your partner',
+    month: p.m,
+    items: p.items
+      .filter((i) => Array.isArray(i) && Number.isFinite(i[0]) && Number.isFinite(i[1]))
+      .map(([day, amount, emoji, name, note]) => [Math.trunc(day), Math.round(amount),
+        String(emoji || '🏷️').slice(0, 8), String(name || '').slice(0, 30), String(note || '').slice(0, 80)]),
+  };
+}
+
+const settleLink = (code) => `${location.origin}${location.pathname}#settle=${code}`;
+
+function settleRow([day, amount, emoji, name, note], key) {
+  const [y, m] = key.split('-').map(Number);
+  const date = new Date(y, m - 1, day).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return `
+    <div class="row">
+      <span class="emoji">${esc(emoji)}</span>
+      <span class="row-main"><span class="row-title">${esc(name)}</span><span class="row-sub">${[date, note].filter(Boolean).map(esc).join(' · ')}</span></span>
+      <span class="row-amt">${fmt(amount)}<span class="row-sub">half ${fmt(otherHalf(amount))}</span></span>
+    </div>`;
+}
+
+// Who owes whom for a month, given both people's split expenses. Used for a live settle-up and for
+// looking back at a saved one.
+function settleBreakdown(partner, key, mine, theirs, settled = false) {
+  const mineTotal = mine.reduce((sum, [, a]) => sum + a, 0);
+  const theirTotal = theirs.reduce((sum, [, a]) => sum + a, 0);
+  const owedToMe = mine.reduce((sum, [, a]) => sum + otherHalf(a), 0);
+  const owedByMe = theirs.reduce((sum, [, a]) => sum + otherHalf(a), 0);
+  const net = owedToMe - owedByMe;
+  const name = esc(partner);
+  const headline = settled
+    ? (!net ? 'You were even' : net > 0 ? `${name} paid you` : `You paid ${name}`)
+    : (!net ? "You're even" : net > 0 ? `${name} owes you` : `You owe ${name}`);
+  return {
+    net, mineTotal, theirTotal,
+    summary: `
+      <div class="settle-result ${net < 0 ? 'neg' : ''}">
+        <div class="hero-label">${headline}</div>
+        ${net ? `<div class="settle-amount">${fmt(Math.abs(net))}</div>` : ''}
+        <div class="settle-math">
+          <div>You paid <b>${fmt(mineTotal)}</b> split → ${name}'s half <b>${fmt(owedToMe)}</b></div>
+          <div>${name} paid <b>${fmt(theirTotal)}</b> split → your half <b>${fmt(owedByMe)}</b></div>
+        </div>
+      </div>`,
+    lists: `
+      <section class="settle-list">
+        <h3>You paid <small>${mine.length}</small></h3>
+        ${mine.map((i) => settleRow(i, key)).join('') || '<p class="empty">No split expenses.</p>'}
+        <h3>${name} paid <small>${theirs.length}</small></h3>
+        ${theirs.map((i) => settleRow(i, key)).join('') || '<p class="empty">No split expenses.</p>'}
+      </section>`,
+  };
+}
+
+// A past settle-up exactly as it was when you marked it settled.
+function settlementSheet(key) {
+  const rec = db.settlements[key];
+  const head = `
+    <h2>${monthLabel(key)}</h2>
+    <p class="settle-done">Settled ${dayLabel(rec.date).replace(/^(Today|Yesterday)$/, (d) => d.toLowerCase())} with ${esc(rec.partner)}</p>`;
+  if (!rec.mineItems) { // settled before item lists were saved
+    openSheet(`${head}
+      <div class="settle-result ${rec.net < 0 ? 'neg' : ''}">
+        <div class="hero-label">${settledText(rec).replace(/^./, (c) => c.toUpperCase())}</div>
+      </div>
+      <p class="hint">The item-by-item list wasn't saved for this settle-up.</p>
+      <button class="text-btn" data-action="close">Close</button>`);
+    return;
+  }
+  const b = settleBreakdown(rec.partner, key, rec.mineItems, rec.theirItems, true);
+  openSheet(`${head}${b.summary}${b.lists}<button class="text-btn" data-action="close">Close</button>`);
+}
+
+function renderSettle() {
+  const key = settle.month;
+  const mine = splitItems(key);
+  const mineTotal = mine.reduce((sum, [, a]) => sum + a, 0);
+  const done = db.settlements[key];
+  const nav = `
+    <div class="settle-nav">
+      <button class="icon-btn" data-action="settle-month" data-delta="-1" ${key <= db.startMonth ? 'disabled' : ''} aria-label="Previous month">‹</button>
+      <b>${monthLabel(key)}</b>
+      <button class="icon-btn" data-action="settle-month" data-delta="1" ${key >= monthKey() ? 'disabled' : ''} aria-label="Next month">›</button>
+    </div>`;
+  const doneNote = done ? `
+    <p class="settle-done">Settled ${dayLabel(done.date).replace(/^(Today|Yesterday)$/, (d) => d.toLowerCase())}: ${settledText(done)}.${done.mine !== mineTotal
+      ? ' Your split expenses changed since then, so settle again to update it.' : ''}</p>` : '';
+
+  if (settle.view === 'show') {
+    openSheet(`
+      <h2>Your code</h2>
+      <p class="hint" style="margin-top:0">On your partner's phone: <b>History → Settle up → Scan partner's code</b>.</p>
+      <div class="qr-box" id="qr-box"><span class="hint">Making your code…</span></div>
+      <button class="secondary" data-action="settle-share">Send as a link instead</button>
+      <button class="text-btn" data-action="settle-back">Back</button>`);
+    showQR();
+    return;
+  }
+  if (settle.view === 'scan') {
+    openSheet(`
+      <h2>Scan your partner's code</h2>
+      <p class="hint" style="margin-top:0">Point the camera at the code on their screen.</p>
+      <video id="scan-video" class="scan-video" playsinline muted></video>
+      <button class="text-btn" data-action="settle-back">Back</button>`);
+    startScan();
+    return;
+  }
+  if (settle.view === 'paste') {
+    openSheet(`
+      <h2>Paste a code</h2>
+      <p class="hint" style="margin-top:0">Paste the link or code your partner sent you.</p>
+      <textarea id="settle-code" class="text" rows="4" placeholder="https://…#settle=B1…" autocomplete="off"></textarea>
+      <button class="secondary" data-action="settle-clipboard">Paste from clipboard</button>
+      <button class="primary" data-action="settle-use-code">Use this code</button>
+      <button class="text-btn" data-action="settle-back">Back</button>`, 'settle-code');
+    return;
+  }
+  if (settle.view === 'result' && settle.partner) {
+    const p = settle.partner;
+    const b = settleBreakdown(p.name, key, mine, p.items);
+    openSheet(`
+      <h2>Settle up · ${monthLabel(key)}</h2>
+      ${doneNote}
+      ${b.summary}
+      <button class="primary" data-action="settle-mark">
+        ${done ? 'Update' : 'Mark'} ${monthLabel(key).split(' ')[0]} as settled
+      </button>
+      ${b.lists}
+      <button class="text-btn" data-action="settle-back">Back</button>`);
+    return;
+  }
+
+  // Start screen
+  openSheet(`
+    <h2>Settle up</h2>
+    ${nav}
+    ${doneNote}
+    <p class="settle-summary">You paid <b>${fmt(mineTotal)}</b> in ${mine.length} split expense${mine.length === 1 ? '' : 's'}, so your partner owes you <b>${fmt(mine.reduce((s, [, a]) => s + otherHalf(a), 0))}</b> before their side.</p>
+    ${db.myName ? '' : `
+      <label class="lbl">Your name <small>shown on your partner's phone</small></label>
+      <input id="my-name" class="text" style="margin-top:0" placeholder="Your name" maxlength="30" autocomplete="off">`}
+    <button class="primary" data-action="settle-scan">Scan partner's code</button>
+    <button class="secondary" data-action="settle-show">Show my code</button>
+    <div class="settle-links">
+      <button class="text-btn" data-action="settle-share">Send as a link</button>
+      <button class="text-btn" data-action="settle-paste">Paste a code</button>
+    </div>
+    <p class="hint">Each of you scans the other's code so both phones see the same total. Only the person who paid logs a split expense.</p>`);
+}
+
+function openSettle() {
+  settle.month ||= defaultSettleMonth();
+  settle.view = 'home';
+  settle.partner = null;
+  renderSettle();
+}
+
+// Your name has to be set before your code goes to your partner.
+function needName() {
+  const input = document.getElementById('my-name');
+  const name = input?.value.trim();
+  if (name) {
+    db.myName = name;
+    save();
+  }
+  if (db.myName) return false;
+  input?.focus();
+  toast('Add your name first');
+  return true;
+}
+
+async function showQR() {
+  const box = document.getElementById('qr-box');
+  try {
+    const [code] = await Promise.all([encodeSettle(), loadScript('lib/qrcode.js')]);
+    if (code.length > SETTLE_QR_LIMIT) {
+      box.innerHTML = '<span class="hint">Too many expenses to fit in one code. Use <b>Send as a link</b> instead.</span>';
+      return;
+    }
+    const qr = qrcode(0, 'L');
+    qr.addData(code);
+    qr.make();
+    box.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 4, scalable: true });
+  } catch {
+    box.innerHTML = "<span class=\"hint\">Couldn't make a code. Try <b>Send as a link</b>.</span>";
+  }
+}
+
+async function startScan() {
+  try {
+    await loadScript('lib/jsQR.js');
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+  } catch {
+    stopScan();
+    settle.view = 'home';
+    renderSettle();
+    toast('Camera unavailable. Allow camera access, or paste a code.');
+    return;
+  }
+  const video = document.getElementById('scan-video');
+  if (!video) return stopScan(); // the sheet was closed while the camera started
+  video.srcObject = scanStream;
+  await video.play().catch(() => {});
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const tick = () => {
+    if (!scanStream) return;
+    if (video.readyState >= 2 && video.videoWidth) {
+      const scale = Math.min(1, 800 / Math.max(video.videoWidth, video.videoHeight)); // smaller frames decode faster
+      canvas.width = Math.round(video.videoWidth * scale);
+      canvas.height = Math.round(video.videoHeight * scale);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const frame = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const hit = jsQR(frame.data, frame.width, frame.height, { inversionAttempts: 'dontInvert' });
+      if (hit && /B[01]\./.test(hit.data)) {
+        stopScan();
+        receiveCode(hit.data);
+        return;
+      }
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+function stopScan() {
+  scanStream?.getTracks().forEach((t) => t.stop());
+  scanStream = null;
+}
+
+async function receiveCode(text) {
+  let p = null;
+  try {
+    p = await decodeSettle(text);
+  } catch {}
+  const problem = !p ? "That code didn't work. Ask for a new one."
+    : p.id === db.deviceId ? "That's your own code. Use your partner's." : '';
+  if (problem) {
+    if (settle.view === 'scan') {
+      settle.view = 'home';
+      renderSettle();
+    }
+    return toast(problem);
+  }
+  settle.partner = p;
+  settle.month = p.month;
+  settle.view = 'result';
+  renderSettle();
+}
+
+async function shareSettle() {
+  const link = settleLink(await encodeSettle());
+  const text = `My split expenses for ${monthLabel(settle.month)}. In Budget, go to History → Settle up → Paste a code, and paste this link:\n${link}`;
+  if (navigator.share) {
+    try {
+      await navigator.share({ text });
+    } catch {} // closing the share sheet isn't an error
+  } else {
+    await navigator.clipboard.writeText(link);
+    toast('Link copied');
+  }
+}
+
+// Opened from a shared link. If this browser has no budget data (on iPhone, Safari and the home-screen app
+// keep separate data), the code has to be pasted into the app instead.
+function handleSettleLink() {
+  const code = location.hash.match(/settle=([A-Za-z0-9._-]+)/)?.[1];
+  if (!code) return;
+  history.replaceState(null, '', location.pathname);
+  if (db.expenses.length || db.budget) {
+    openSettle();
+    receiveCode(code);
+    return;
+  }
+  openSheet(`
+    <h2>Open this in your Budget app</h2>
+    <p class="hint" style="margin-top:0">This browser doesn't have your budget. Copy the code, then in the Budget app on your home screen go to <b>History → Settle up → Paste a code</b>.</p>
+    <button class="primary" data-action="copy-settle-link" data-link="${esc(settleLink(code))}">Copy code</button>`);
+}
+
 // ---------- Actions ----------
 
 let toastTimer;
@@ -1122,6 +1509,68 @@ const actions = {
     const next = unclosedMonth();
     if (next) closeMonthSheet(next);
   },
+  'open-settle': () => openSettle(),
+  'view-settlement': (el) => settlementSheet(el.dataset.month),
+  'settle-month'(el) {
+    settle.month = addMonths(settle.month, Number(el.dataset.delta));
+    renderSettle();
+  },
+  'settle-back'() {
+    stopScan();
+    settle.view = 'home';
+    renderSettle();
+  },
+  'settle-show'() {
+    if (needName()) return;
+    settle.view = 'show';
+    renderSettle();
+  },
+  'settle-share'() {
+    if (needName()) return;
+    shareSettle();
+  },
+  'settle-scan'() {
+    settle.view = 'scan';
+    renderSettle();
+  },
+  'settle-paste'() {
+    settle.view = 'paste';
+    renderSettle();
+  },
+  async 'settle-clipboard'() {
+    try {
+      document.getElementById('settle-code').value = await navigator.clipboard.readText();
+    } catch {
+      toast('Long-press the box and choose Paste');
+    }
+  },
+  'settle-use-code'() {
+    const text = val('settle-code').trim();
+    if (!text) return toast('Paste the code first');
+    receiveCode(text);
+  },
+  'settle-mark'() {
+    // Keep both lists so the settle-up can be looked at again later, exactly as you both saw it.
+    const mineItems = splitItems(settle.month);
+    const theirItems = settle.partner.items;
+    const b = settleBreakdown(settle.partner.name, settle.month, mineItems, theirItems);
+    db.settlements[settle.month] = {
+      date: todayISO(), partner: settle.partner.name, net: b.net,
+      mine: b.mineTotal, theirs: b.theirTotal, mineItems, theirItems,
+    };
+    save();
+    render();
+    renderSettle();
+    toast(`${monthLabel(settle.month).split(' ')[0]} settled`);
+  },
+  async 'copy-settle-link'(el) {
+    try {
+      await navigator.clipboard.writeText(el.dataset.link);
+      toast('Copied. Now open the Budget app.');
+    } catch {
+      toast("Couldn't copy. Long-press the link in your message instead.");
+    }
+  },
   'set-theme'(el) {
     db.theme = el.dataset.theme;
     save();
@@ -1222,6 +1671,7 @@ document.addEventListener('visibilitychange', () => {
 
 startup();
 render();
+handleSettleLink(); // a shared settle-up link wins over the month-end prompt
 promptCloseOut();
 
 // Offline caching is skipped on localhost so local previews always show your latest edits.
