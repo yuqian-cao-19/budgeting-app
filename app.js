@@ -1012,7 +1012,8 @@ const actions = {
       prepareGoogle();
       return toast('Connecting to Google… tap Sync again in a moment');
     }
-    tokenClient.requestAccessToken({ prompt: '' });
+    // Always show Google's account picker so you choose which account reads the sheet.
+    tokenClient.requestAccessToken({ prompt: 'select_account' });
   },
   'pick-me'(el) {
     db.sheet.me = el.dataset.name;
