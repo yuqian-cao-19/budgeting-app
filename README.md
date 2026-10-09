@@ -55,6 +55,8 @@ Fund balances are kept indefinitely. Only their month-by-month history is trimme
 - Deleting the home-screen app, or clearing website data in your browser settings, erases your expenses.
 - Data older than 12 months is deleted automatically. The money it rolled over is still counted.
 - Works offline once installed.
+- **Settings → Appearance:** dark (the default), light, or match your phone's setting.
+- The font is [Figtree](https://fonts.google.com/specimen/Figtree) (free, SIL Open Font License), stored in `fonts/figtree.woff2` so it works offline.
 
 ## Updating the app later
 

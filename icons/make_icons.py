@@ -4,13 +4,13 @@ import struct
 import zlib
 from pathlib import Path
 
-GREEN = (22, 163, 74)
+NAVY = (36, 64, 122)
 WHITE = (255, 255, 255)
 SS = 3  # supersampling for smooth edges
 
 
 def pixel(x, y):
-    """Ring-gauge design: white 3/4 arc plus a faint remainder, on green."""
+    """Ring-gauge design: white 3/4 arc plus a faint remainder, on navy."""
     dx, dy = x - 0.5, y - 0.5
     r = math.hypot(dx, dy)
     if 0.19 <= r <= 0.30:
@@ -29,7 +29,7 @@ def render(size):
                 for sx in range(SS):
                     a += pixel((px + (sx + 0.5) / SS) / size, (py + (sy + 0.5) / SS) / size)
             a /= SS * SS
-            row += bytes(round(g + (w - g) * a) for g, w in zip(GREEN, WHITE))
+            row += bytes(round(g + (w - g) * a) for g, w in zip(NAVY, WHITE))
         rows.append(bytes(row))
     raw = zlib.compress(b"".join(rows), 9)
 

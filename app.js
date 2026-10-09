@@ -25,7 +25,6 @@ const fmt = (cents) => money.format(cents / 100);
 const moneyWhole = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 // Drops ".00" on round amounts so the stats row fits on narrow phones.
 const fmtShort = (cents) => (cents % 100 ? fmt(cents) : moneyWhole.format(cents / 100));
-const fmtSigned = (cents) => (cents > 0 ? '+' : cents < 0 ? '−' : '') + fmtShort(Math.abs(cents));
 const fmtLeft = (cents) => (cents < 0 ? '−' : '') + fmt(Math.abs(cents));
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -76,6 +75,7 @@ function freshDb() {
     startCarry: 0, // rollover into startMonth (preserved when old months are pruned)
     rules: {}, // merchant key -> catId, learned from imports
     ignoredImports: [], // importIds of bank charges you chose not to import
+    theme: 'dark', // 'dark' | 'light' | 'system'
     // Savings: a fund's balance is `base` plus its transactions. Old transactions fold into `base` when pruned.
     // `auto` = fixed amount added on the 1st; `target` = flexible amount set aside from leftovers. A fund can have both.
     funds: [], // { id, name, emoji, auto, target, goal, base, created, autoThrough, starred, deleted }
@@ -217,16 +217,46 @@ function prune() {
   db.funds = db.funds.filter((f) => !f.deleted || db.fundTx.some((t) => t.fundId === f.id));
 }
 
+// A short-lived redesign stored drawn-icon names instead of emoji. Turn those back into emoji,
+// and make sure every category and fund has one.
+const ICON_EMOJI = {
+  rent: '🏠', internet: '🌐', phone: '📱', insurance: '🛡️', utility: '💡', bill: '📄', grocery: '🛒',
+  dining: '🍽️', drinks: '🧋', coffee: '☕', entertainment: '🎬', fitness: '💪', shopping: '🛍️',
+  transport: '🚗', gas: '⛽', plane: '✈️', helicopter: '🚁', health: '🩺', gift: '🎁', pets: '🐾',
+  travel: '✈️', education: '📚', music: '🎵', heart: '❤️', tag: '🏷️', jar: '💰', emergency: '🛟', stocks: '📈',
+};
+function restoreEmoji() {
+  for (const c of db.categories) {
+    c.emoji ||= ICON_EMOJI[c.icon] || (c.type === 'fixed' ? '📄' : '🏷️');
+    delete c.icon;
+  }
+  for (const f of db.funds) {
+    f.emoji ||= ICON_EMOJI[f.icon] || '💰';
+    delete f.icon;
+  }
+}
+
+// Dark by default; "Match phone" follows the system setting. The status bar color follows along.
+function applyTheme() {
+  document.documentElement.dataset.theme = db.theme;
+  const dark = db.theme === 'dark' || (db.theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.querySelector('meta[name=theme-color]').content = dark ? '#0d1424' : '#f3f5fa';
+}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme());
+
 function startup() {
   // Fields added after the first release; older saved data won't have them.
   db.rules ||= {};
   db.ignoredImports ||= [];
+  db.theme ||= 'dark';
+  applyTheme();
   delete db.sheet; // left over from the removed Google Sheet sync
   if (!db.funds) {
     db.funds = [];
     db.fundTx = [];
   }
   migrateFunds();
+  restoreEmoji();
   ensureMonths();
   applyAutoSavings();
   // With no flexible funds there's nothing to close out, so past months close on their own.
@@ -270,10 +300,13 @@ function homeView() {
   } else if (isCurrent && free > 0) {
     const d = new Date();
     const daysLeft = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate() - d.getDate() + 1;
-    sub = `≈ ${fmt(Math.floor(free / daysLeft))} / day · ${daysLeft} day${daysLeft > 1 ? 's' : ''} left`;
+    sub = `~${fmt(Math.floor(free / daysLeft))}/day · ${daysLeft} day${daysLeft > 1 ? 's' : ''} left`;
   }
   const actual = setAside
-    ? `<div class="hero-actual"><b>${fmtLeft(s.remaining)}</b> ${isCurrent ? 'actually left' : 'was left'} · ${fmt(setAside)} ${isCurrent ? 'set aside for savings' : 'moved to savings'}</div>`
+    ? `<div class="hero-actual">
+        <div><b>${fmtLeft(s.remaining)}</b> ${isCurrent ? 'in hand' : 'was left'}</div>
+        <div><b>${fmt(setAside)}</b> ${isCurrent ? 'for savings' : 'to savings'}</div>
+      </div>`
     : '';
 
   const pending = unclosedMonth();
@@ -292,13 +325,12 @@ function homeView() {
     <section class="card hero ${neg ? 'neg' : ''}">
       <div class="hero-label">${isCurrent ? 'Left to spend' : 'Left over'}</div>
       <div class="hero-amount">${fmtLeft(free)}</div>
-      ${actual}
       <div class="meter"><span style="width:${pctLeft}%"></span></div>
       ${sub ? `<div class="hero-sub">${sub}</div>` : ''}
+      ${actual}
     </section>
     <section class="card stats">
-      ${stat('Budget', fmtShort(s.budget))}
-      ${s.carry ? stat('Rollover', fmtSigned(s.carry)) : ''}
+      ${stat('Budget', fmtShort(s.budget + s.carry))}
       ${stat('Fixed', fmtShort(s.fixed))}
       ${stat('Spent', fmtShort(s.spent))}
     </section>
@@ -527,6 +559,13 @@ function settingsView() {
       <h2>Flexible categories</h2>
       ${activeCats('flex').map(row).join('')}
       <button class="add-row" data-action="new-cat" data-type="flex">+ Add category</button>
+    </section>
+    <section class="card">
+      <h2>Appearance</h2>
+      <div class="chips">
+        ${[['dark', 'Dark'], ['light', 'Light'], ['system', 'Match phone']].map(([value, label]) =>
+          `<button class="chip ${db.theme === value ? 'on' : ''}" data-action="set-theme" data-theme="${value}">${label}</button>`).join('')}
+      </div>
     </section>
     <section class="card">
       <h2>Data</h2>
@@ -1082,6 +1121,12 @@ const actions = {
     commit(total ? `Moved ${fmt(total)} to savings` : `${monthLabel(key)} closed out`);
     const next = unclosedMonth();
     if (next) closeMonthSheet(next);
+  },
+  'set-theme'(el) {
+    db.theme = el.dataset.theme;
+    save();
+    applyTheme();
+    render();
   },
   'import-chase': () => document.getElementById('chase-file').click(),
   'do-import'() {

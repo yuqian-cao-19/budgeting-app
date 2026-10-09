@@ -1,33 +1,33 @@
-:root {
-  --bg: #f2f3f7;
-  --card: #fff;
-  --text: #111827;
-  --muted: #6b7280;
-  --line: #eceef2;
-  --accent: #16a34a;
-  --accent-soft: #dcfce7;
-  --neg: #dc2626;
-  --warn: #b45309;
-  --chip: #f1f2f5;
-  --shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 4px 16px rgba(0, 0, 0, .04);
-  --tabbar-h: 60px;
-  color-scheme: light dark;
+/* Figtree (SIL Open Font License), one variable file covering weights 300–900, stored in /fonts so it works offline. */
+@font-face {
+  font-family: 'Figtree';
+  font-style: normal;
+  font-weight: 300 900;
+  font-display: swap;
+  src: url(fonts/figtree.woff2) format('woff2');
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0d0f13;
-    --card: #171a21;
-    --text: #f3f4f6;
-    --muted: #9ca3af;
-    --line: #242833;
-    --accent: #22c55e;
-    --accent-soft: #123222;
-    --neg: #f87171;
-    --warn: #fbbf24;
-    --chip: #232733;
-    --shadow: none;
-  }
+/* Navy calm. Each color is light-dark(light value, dark value); the theme picks which one applies.
+   Settings → Appearance sets data-theme on <html>: dark (default), light, or system (match phone). */
+:root, [data-theme="dark"] { color-scheme: dark; }
+[data-theme="light"] { color-scheme: light; }
+[data-theme="system"] { color-scheme: light dark; }
+
+:root {
+  --bg: light-dark(#f3f5fa, #0d1424);
+  --card: light-dark(#ffffff, #151d31);
+  --border: light-dark(#e3e7f0, #232d46);
+  --text: light-dark(#16213d, #e8ecf6);
+  --muted: light-dark(#6b7591, #8f9ab5);
+  --line: light-dark(#eef0f5, #212a40);
+  --accent: light-dark(#24407a, #8ea8ea);      /* numbers, bars, links */
+  --accent-soft: light-dark(#e8edf8, #1f2b4b);
+  --btn: light-dark(#24407a, #3d5fbf);         /* filled buttons */
+  --on-btn: #ffffff;
+  --neg: light-dark(#c2362b, #f2867a);
+  --warn: light-dark(#b45309, #f0b45c);
+  --chip: light-dark(#eef1f8, #1c2540);
+  --tabbar-h: 60px;
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -36,7 +36,7 @@ html, body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 16px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+  font: 16px/1.4 Figtree, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -64,7 +64,7 @@ main {
 .icon-btn {
   width: 40px; height: 40px; border-radius: 50%;
   font-size: 26px; line-height: 1; display: grid; place-items: center;
-  background: var(--card); box-shadow: var(--shadow);
+  background: var(--card); border: 1px solid var(--border);
 }
 .icon-btn:disabled { opacity: .3; }
 
@@ -76,8 +76,8 @@ main {
 
 .card {
   display: block; width: 100%; text-align: left;
-  background: var(--card); border-radius: 20px;
-  padding: 16px; margin-bottom: 12px; box-shadow: var(--shadow);
+  background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+  padding: 16px; margin-bottom: 10px;
 }
 .card h2 { font-size: 15px; margin: 0 0 8px; font-weight: 650; display: flex; align-items: baseline; gap: 8px; }
 .card h2 small { font-weight: 400; color: var(--muted); font-size: 13px; }
@@ -88,14 +88,14 @@ main {
 .hero-label { font-size: 13px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
 .hero-amount {
   font-size: clamp(40px, 14vw, 60px); font-weight: 800; letter-spacing: -.02em;
-  color: var(--accent); margin: 2px 0 14px; font-variant-numeric: tabular-nums;
+  color: var(--accent); margin: 10px 0 14px; font-variant-numeric: tabular-nums;
 }
 .hero.neg .hero-amount { color: var(--neg); }
 .meter { height: 10px; border-radius: 99px; background: var(--chip); overflow: hidden; }
 .meter span { display: block; height: 100%; background: var(--accent); border-radius: inherit; transition: width .3s; }
 .hero-sub { margin-top: 10px; color: var(--muted); font-size: 14px; }
-.hero-actual { margin: -8px 0 14px; color: var(--muted); font-size: 14px; }
-.hero-actual b { color: var(--text); font-weight: 650; }
+.hero-actual { margin-top: 10px; color: var(--muted); font-size: 15px; line-height: 1.5; }
+.hero-actual b { color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
 .hero.neg .hero-sub { color: var(--neg); font-weight: 600; }
 
 .stats { display: flex; padding: 14px 6px; }
@@ -207,12 +207,12 @@ main {
   content: ""; position: absolute; top: 3px; left: 3px; width: 26px; height: 26px;
   border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .25); transition: transform .2s;
 }
-.switch-row input:checked + .switch { background: var(--accent); }
+.switch-row input:checked + .switch { background: var(--btn); }
 .switch-row input:checked + .switch::after { transform: translateX(20px); }
 
 .primary {
   display: block; width: 100%; margin-top: 16px; padding: 15px;
-  border-radius: 14px; background: var(--accent); color: #fff;
+  border-radius: 14px; background: var(--btn); color: var(--on-btn);
   font-weight: 700; font-size: 17px;
 }
 .primary:disabled { opacity: .4; }
@@ -225,8 +225,8 @@ main {
   bottom: calc(env(safe-area-inset-bottom) + var(--tabbar-h) + 14px);
   display: flex; align-items: center; gap: 8px;
   padding: 14px 26px; border-radius: 99px;
-  background: var(--accent); color: #fff; font-weight: 700; font-size: 17px;
-  box-shadow: 0 6px 20px rgba(22, 163, 74, .35); z-index: 5;
+  background: var(--btn); color: var(--on-btn); font-weight: 700; font-size: 17px;
+  box-shadow: 0 6px 18px rgba(8, 16, 40, .35); z-index: 5;
 }
 .add-btn span { font-size: 24px; line-height: 0; font-weight: 500; }
 .no-add .add-btn { display: none; }
@@ -238,7 +238,7 @@ main {
   padding-bottom: env(safe-area-inset-bottom);
   background: color-mix(in srgb, var(--card) 88%, transparent);
   -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--border);
 }
 .tabbar button { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: 11px; font-weight: 600; color: var(--muted); }
 .tabbar svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
@@ -252,7 +252,7 @@ main {
   position: absolute; left: 0; right: 0; bottom: var(--kb, 0px);
   max-width: 560px; margin: 0 auto;
   max-height: calc(var(--vvh, 100vh) - 30px); overflow-y: auto; overscroll-behavior: contain;
-  background: var(--card); border-radius: 22px 22px 0 0;
+  background: var(--card); border-radius: 22px 22px 0 0; border-top: 1px solid var(--border);
   padding: 8px 18px calc(env(safe-area-inset-bottom) + 18px);
   transform: translateY(105%); transition: transform .25s cubic-bezier(.2, .8, .2, 1);
 }
