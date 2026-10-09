@@ -13,34 +13,53 @@ import android.view.View;
 import android.widget.RemoteViews;
 
 import java.text.NumberFormat;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
 /**
- * Home-screen widget showing Left to spend, plus Budget and Spent when it's wide enough.
- * Its numbers come from the app (see WidgetBridgePlugin); it only works out ~$/day and days left
- * from today's date, so those stay current between app opens.
+ * Home-screen widgets. Three sizes, each its own entry in the widget picker:
+ *   3×1  Left to spend, plus Budget and Spent beside it (this class)
+ *   1×1  Left to spend only (BudgetWidgetSmall)
+ *   2×1  Left to spend and the last expense, side by side (BudgetWidgetLast)
+ * Numbers come from the app (see WidgetBridgePlugin). The widget only works out what depends on today's
+ * date (~$/day, days left, "Today"/"Yesterday"), so those stay current between app opens.
  */
 public class BudgetWidget extends AppWidgetProvider {
 
     static final String PREFS = "budget_widget";
     private static final int WIDE_DP = 180; // about 3 home-screen cells
 
+    enum Kind { WIDE, SMALL, LAST }
+
+    /** Which widget this provider draws; the subclasses override it. */
+    Kind kind() {
+        return Kind.WIDE;
+    }
+
     @Override
     public void onUpdate(Context ctx, AppWidgetManager manager, int[] ids) {
-        for (int id : ids) render(ctx, manager, id);
+        for (int id : ids) render(ctx, manager, id, kind());
     }
 
     @Override
     public void onAppWidgetOptionsChanged(Context ctx, AppWidgetManager manager, int id, Bundle options) {
-        render(ctx, manager, id); // resized: show or hide the extra numbers
+        render(ctx, manager, id, kind()); // resized: show or hide the extra numbers
     }
 
+    /** Redraws every Budget widget on the home screen, whatever its size. */
     static void updateAll(Context ctx) {
         AppWidgetManager manager = AppWidgetManager.getInstance(ctx);
-        for (int id : manager.getAppWidgetIds(new ComponentName(ctx, BudgetWidget.class))) render(ctx, manager, id);
+        draw(ctx, manager, BudgetWidget.class, Kind.WIDE);
+        draw(ctx, manager, BudgetWidgetSmall.class, Kind.SMALL);
+        draw(ctx, manager, BudgetWidgetLast.class, Kind.LAST);
+    }
+
+    private static void draw(Context ctx, AppWidgetManager manager, Class<?> provider, Kind kind) {
+        for (int id : manager.getAppWidgetIds(new ComponentName(ctx, provider))) render(ctx, manager, id, kind);
     }
 
     private static String money(long cents) {
@@ -48,14 +67,38 @@ public class BudgetWidget extends AppWidgetProvider {
         return cents < 0 ? "−" + s : s;
     }
 
-    // Drops ".00" on round amounts (like the app's columns) so Budget and Spent fit beside the big number.
+    // Drops ".00" on round amounts (like the app's columns) so numbers fit in small spaces.
     private static String moneyShort(long cents) {
         return cents % 100 == 0 ? money(cents).replace(".00", "") : money(cents);
     }
 
-    private static void render(Context ctx, AppWidgetManager manager, int id) {
+    // "Today", "Yesterday", or "Oct 6", worked out against today's date.
+    private static String dayLabel(String iso, Calendar now) {
+        try {
+            SimpleDateFormat parse = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+            Date d = parse.parse(iso);
+            String today = parse.format(now.getTime());
+            Calendar y = (Calendar) now.clone();
+            y.add(Calendar.DAY_OF_MONTH, -1);
+            if (iso.equals(today)) return "Today";
+            if (iso.equals(parse.format(y.getTime()))) return "Yesterday";
+            return new SimpleDateFormat("MMM d", Locale.US).format(d);
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static int layoutFor(Kind kind) {
+        switch (kind) {
+            case SMALL: return R.layout.widget_small;
+            case LAST: return R.layout.widget_last;
+            default: return R.layout.widget_budget;
+        }
+    }
+
+    private static void render(Context ctx, AppWidgetManager manager, int id, Kind kind) {
         SharedPreferences p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        RemoteViews v = new RemoteViews(ctx.getPackageName(), R.layout.widget_budget);
+        RemoteViews v = new RemoteViews(ctx.getPackageName(), layoutFor(kind));
 
         Intent open = new Intent(ctx, MainActivity.class);
         v.setOnClickPendingIntent(R.id.widget_root,
@@ -64,8 +107,11 @@ public class BudgetWidget extends AppWidgetProvider {
         if (!p.getBoolean("ready", false)) {
             v.setTextViewText(R.id.widget_label, "BUDGET");
             v.setTextViewText(R.id.widget_left, "Open app");
-            v.setViewVisibility(R.id.widget_sub, View.GONE);
-            v.setViewVisibility(R.id.widget_stats, View.GONE);
+            if (kind == Kind.WIDE) {
+                v.setViewVisibility(R.id.widget_sub, View.GONE);
+                v.setViewVisibility(R.id.widget_stats, View.GONE);
+            }
+            if (kind == Kind.LAST) v.setViewVisibility(R.id.widget_last, View.GONE);
             manager.updateAppWidget(id, v);
             return;
         }
@@ -74,14 +120,42 @@ public class BudgetWidget extends AppWidgetProvider {
         Calendar now = Calendar.getInstance();
         String thisMonth = String.format(Locale.US, "%04d-%02d", now.get(Calendar.YEAR), now.get(Calendar.MONTH) + 1);
         boolean current = thisMonth.equals(p.getString("month", ""));
-
         String month = p.getString("monthName", "");
-        String shortMonth = month.length() > 3 ? month.substring(0, 3) : month; // "October" -> "Oct"
-        v.setTextViewText(R.id.widget_label, (shortMonth + " · Left to spend").toUpperCase(Locale.US));
+        String shortMonth = (month.length() > 3 ? month.substring(0, 3) : month).toUpperCase(Locale.US); // "OCT"
+
         v.setTextViewText(R.id.widget_left, money(left));
         v.setTextColor(R.id.widget_left, left < 0 ? 0xFFF2867A : 0xFF8EA8EA);
 
-        // Per-day and days left depend only on the date, so the widget keeps them current itself.
+        if (kind == Kind.SMALL) {
+            // Too small for a sentence: the month on top, "left" underneath.
+            v.setTextViewText(R.id.widget_label, current ? shortMonth : shortMonth + " · OPEN APP");
+            manager.updateAppWidget(id, v);
+            return;
+        }
+
+        if (kind == Kind.LAST) {
+            v.setTextViewText(R.id.widget_label, shortMonth + " · LEFT");
+            String lastDate = p.getString("lastDate", "");
+            boolean hasLast = current && !lastDate.isEmpty();
+            v.setViewVisibility(R.id.widget_last, View.VISIBLE);
+            if (hasLast) {
+                String note = p.getString("lastNote", "");
+                v.setTextViewText(R.id.widget_last_title, p.getString("lastEmoji", "") + " " + p.getString("lastName", ""));
+                v.setTextViewText(R.id.widget_last_amount, money(p.getLong("lastAmount", 0)));
+                v.setTextViewText(R.id.widget_last_when,
+                    dayLabel(lastDate, now) + (note.isEmpty() ? "" : " · " + note));
+            } else {
+                v.setTextViewText(R.id.widget_last_title, current ? "No expenses yet" : "New month");
+                v.setTextViewText(R.id.widget_last_amount, "");
+                v.setTextViewText(R.id.widget_last_when, current ? "" : "Open the app to update");
+            }
+            manager.updateAppWidget(id, v);
+            return;
+        }
+
+        v.setTextViewText(R.id.widget_label, shortMonth + " · LEFT TO SPEND");
+
+        // WIDE: optional ~$/day and days left under the number, Budget and Spent beside it.
         List<String> sub = new ArrayList<>();
         if (!current) {
             sub.add("New month: open the app to update");

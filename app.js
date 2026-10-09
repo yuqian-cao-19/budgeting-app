@@ -108,7 +108,14 @@ function updateWidget() {
   if (!NATIVE || !Native.WidgetBridge || !db.months?.[monthKey()]) return;
   const key = monthKey();
   const s = stats(key);
+  // The most recent expense this month, for the 2×1 widget.
+  const last = [...s.exps].sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt)[0];
   Native.WidgetBridge.update({
+    lastEmoji: last ? cat(last.catId).emoji : '',
+    lastName: last ? cat(last.catId).name : '',
+    lastNote: last?.note || '',
+    lastAmount: last ? counted(last) : 0, // your share, as on the Home list
+    lastDate: last?.date || '',
     month: key,
     monthName: monthLabel(key).split(' ')[0],
     left: s.remaining - savingsTargets(), // same as the big number on Home
@@ -651,11 +658,16 @@ function widgetCard() {
   return `
     <section class="card">
       <h2>Home-screen widget</h2>
-      <p class="hint" style="margin:0 0 8px">Always shows Left to spend. Also show:</p>
+      <p class="hint" style="margin:0 0 8px">There are three sizes. Long-press your home screen, tap <b>Widgets</b>, and find <b>Budget</b>:</p>
+      <ul class="hint widget-sizes">
+        <li><b>1×1:</b> Left to spend</li>
+        <li><b>2×1:</b> Left to spend and your last expense</li>
+        <li><b>3×1:</b> Left to spend, plus the extras below</li>
+      </ul>
+      <label class="lbl">On the 3×1 widget, also show</label>
       <div class="chips">
         ${opts.map(([key, label]) => `<button class="chip ${db.widget[key] ? 'on' : ''}" data-action="toggle-widget" data-key="${key}">${label}</button>`).join('')}
       </div>
-      <p class="hint">Budget and Spent appear when the widget is at least 3 squares wide. To add it, long-press your home screen, tap <b>Widgets</b>, and find <b>Budget</b>.</p>
     </section>`;
 }
 

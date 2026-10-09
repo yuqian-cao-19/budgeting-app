@@ -36,6 +36,30 @@
                 android:resource="@xml/budget_widget_info" />
         </receiver>
 
+        <!-- 1×1: just Left to spend -->
+        <receiver
+            android:name=".BudgetWidgetSmall"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/budget_widget_small_info" />
+        </receiver>
+
+        <!-- 2×1: Left to spend and the last expense -->
+        <receiver
+            android:name=".BudgetWidgetLast"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/budget_widget_last_info" />
+        </receiver>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

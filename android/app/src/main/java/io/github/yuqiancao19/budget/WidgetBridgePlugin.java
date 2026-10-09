@@ -27,6 +27,11 @@ public class WidgetBridgePlugin extends Plugin {
             .putBoolean("showSpent", call.getBoolean("showSpent", true))
             .putBoolean("showPerDay", call.getBoolean("showPerDay", false))
             .putBoolean("showDaysLeft", call.getBoolean("showDaysLeft", false))
+            .putString("lastEmoji", call.getString("lastEmoji", ""))
+            .putString("lastName", call.getString("lastName", ""))
+            .putString("lastNote", call.getString("lastNote", ""))
+            .putLong("lastAmount", Math.round(call.getDouble("lastAmount", 0.0)))
+            .putString("lastDate", call.getString("lastDate", ""))      // "2026-10-09", or "" if none
             .putBoolean("ready", true)
             .apply();
         BudgetWidget.updateAll(ctx);
