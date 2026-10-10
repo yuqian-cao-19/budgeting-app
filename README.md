@@ -64,6 +64,34 @@ Apart? Tap **Send as a link** and share it through Messages or WhatsApp. The oth
 
 The code holds only that month's split expenses (date, amount, category, note) and goes straight from one phone to the other. QR codes are drawn and read by two small open-source libraries in `lib/`.
 
+## Partner sync: settle up without meeting
+
+Both phones upload their split expenses to a **private** GitHub repo. Once you've both uploaded a month, either of you taps **Settle**, and the settle-up log shows up on both phones.
+
+How it works day to day:
+- **Uploading is automatic.** The app uploads your split expenses when you open it, if they changed. You can also tap **Upload** on the Settle up screen.
+- **History → Settle up** shows whether each of you has uploaded the month. When you both have, **Settle October** works on either phone.
+- **Mark settled** saves one settlement file to the repo. The other phone picks it up the next time it opens, and the log appears there too, from that person's side ("You paid Rain $10").
+- **Changes after settling are caught.** If split expenses change later, both phones flag that the month needs settling again.
+- **QR codes still work** for settling in person, under **Settle in person with a QR code**.
+
+What goes in the repo: `months/<month>/<phone id>.json` (each person's split expenses for the month) and `settlements/<month>.json`. Nothing else from the app is uploaded.
+
+### One-time setup (about 5 minutes)
+
+1. **Create a private repo.** On github.com, click **New repository**, name it `budget-sync`, choose **Private**, and click **Create repository**.
+2. **Create a token** that can only touch that repo:
+   - Go to **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**.
+   - Name it `Budget app`. Set **Expiration** to the longest allowed (GitHub caps it at a year).
+   - Under **Repository access**, choose **Only select repositories**, then **budget-sync**.
+   - Under **Permissions → Repository permissions**, set **Contents** to **Read and write**.
+   - Click **Generate token** and copy it. GitHub shows it only once.
+3. **On each phone,** open **Settings → Partner sync**. Enter your name, the repo (`yuqian-cao-19/budget-sync`), and the token, then tap **Save and test**. It should say **Connected**. You can both use the same token.
+
+When the token expires, make a new one the same way and paste it into both phones.
+
+**Keep in mind:** the token can read and change the files in that one repo, and nothing else. It's stored only on each phone, never in backups or settle-up codes. If a phone is lost, delete the token on GitHub (same page) and make a new one. Keep the repo **private**, since it holds your split expenses. The app warns you if it isn't.
+
 ## Backup and restore
 
 Your data lives in the browser's storage on each phone. Clearing the browser's data, reinstalling the app, or losing the phone erases it, so keep backups.

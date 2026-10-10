@@ -231,6 +231,13 @@ main {
 .backup-file b { color: var(--text); }
 .link-btn { color: var(--accent); font-weight: 650; }
 .widget-sizes { margin: 0 0 4px; padding-left: 18px; line-height: 1.6; }
+.sync-box { margin: 4px 0 2px; padding: 4px 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--chip); }
+.sync-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; font-size: 14px; }
+.sync-row + .sync-row { border-top: 1px solid var(--border); }
+.sync-row span { color: var(--muted); }
+.sync-row b { text-align: right; font-weight: 600; }
+.in-person { margin-top: 10px; }
+.in-person summary { padding: 10px 0; color: var(--muted); font-weight: 600; cursor: pointer; }
 .widget-sizes b { color: var(--text); }
 .badge {
   display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 99px; vertical-align: 2px;

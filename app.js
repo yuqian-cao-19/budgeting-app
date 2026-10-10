@@ -651,6 +651,7 @@ function settingsView() {
           `<button class="chip ${db.theme === value ? 'on' : ''}" data-action="set-theme" data-theme="${value}">${label}</button>`).join('')}
       </div>
     </section>
+    ${syncCard()}
     ${NATIVE ? widgetCard() : ''}
     ${backupCard()}
     <section class="card">
@@ -677,6 +678,22 @@ function widgetCard() {
         ${opts.map(([key, label]) => `<button class="chip ${db.widget[key] ? 'on' : ''}" data-action="toggle-widget" data-key="${key}">${label}</button>`).join('')}
       </div>
       <p class="hint"><b>Savings</b> is how much of your savings targets you can still put aside this month. Spending past Left to spend lowers it first, down to $0. Text grows when you make a widget bigger.</p>
+    </section>`;
+}
+
+// Partner sync setup: a private GitHub repo both phones can read and write.
+function syncCard() {
+  const c = syncConf();
+  return `
+    <section class="card">
+      <h2>Partner sync</h2>
+      <p class="hint" style="margin:0 0 4px">Settle up without meeting: both phones upload their split expenses to a <b>private</b> GitHub repo. Setup steps are in the README.</p>
+      <input id="sync-name" class="text" placeholder="Your name (shown to your partner)" maxlength="30" autocomplete="off" value="${esc(db.myName)}">
+      <input id="sync-repo" class="text" placeholder="Repo, like yuqian-cao-19/budget-sync" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(c.repo || '')}">
+      <input id="sync-token" class="text" type="password" placeholder="GitHub token" autocomplete="off" value="${esc(c.token || '')}">
+      <button class="secondary" data-action="sync-save">${syncOn() ? 'Save and test again' : 'Save and test'}</button>
+      <p class="hint" id="sync-status">${syncOn() ? `Set up with <b>${esc(c.repo)}</b>.` : 'Not set up.'}</p>
+      ${syncOn() ? '<button class="text-btn" data-action="sync-off">Turn off on this phone</button>' : ''}
     </section>`;
 }
 
@@ -1380,16 +1397,15 @@ async function decodeSettle(text) {
   if (m[1] === '1') bytes = await pipeBytes(bytes, new DecompressionStream('deflate-raw'));
   const p = JSON.parse(new TextDecoder().decode(bytes));
   if (p?.v !== 1 || !/^\d{4}-\d{2}$/.test(p.m) || !Array.isArray(p.items)) return null;
-  return {
-    id: String(p.id || ''),
-    name: String(p.name || 'Your partner').trim().slice(0, 30) || 'Your partner',
-    month: p.m,
-    items: p.items
-      .filter((i) => Array.isArray(i) && Number.isFinite(i[0]) && Number.isFinite(i[1]))
-      .map(([day, amount, emoji, name, note]) => [Math.trunc(day), Math.round(amount),
-        String(emoji || '🏷️').slice(0, 8), String(name || '').slice(0, 30), String(note || '').slice(0, 80)]),
-  };
+  return { id: String(p.id || ''), name: cleanName(p.name), month: p.m, items: cleanItems(p.items) };
 }
+
+// Split-expense lists and names from the other phone (a code or a synced file) are checked and trimmed.
+const cleanName = (name) => String(name || 'Your partner').trim().slice(0, 30) || 'Your partner';
+const cleanItems = (items) => (Array.isArray(items) ? items : [])
+  .filter((i) => Array.isArray(i) && Number.isFinite(i[0]) && Number.isFinite(i[1]))
+  .map(([day, amount, emoji, name, note]) => [Math.trunc(day), Math.round(amount),
+    String(emoji || '🏷️').slice(0, 8), String(name || '').slice(0, 30), String(note || '').slice(0, 80)]);
 
 // Inside the Android app the page lives at localhost, so links point at the public web app instead.
 const PUBLIC_URL = 'https://yuqian-cao-19.github.io/budgeting-app/';
@@ -1519,6 +1535,13 @@ function renderSettle() {
   }
 
   // Start screen
+  const qrButtons = `
+    <button class="${syncOn() ? 'secondary' : 'primary'}" data-action="settle-scan">Scan partner's code</button>
+    <button class="secondary" data-action="settle-show">Show my code</button>
+    <div class="settle-links">
+      <button class="text-btn" data-action="settle-share">Send as a link</button>
+      <button class="text-btn" data-action="settle-paste">Paste a code</button>
+    </div>`;
   openSheet(`
     <h2>Settle up</h2>
     ${nav}
@@ -1527,20 +1550,240 @@ function renderSettle() {
     ${db.myName ? '' : `
       <label class="lbl">Your name <small>shown on your partner's phone</small></label>
       <input id="my-name" class="text" style="margin-top:0" placeholder="Your name" maxlength="30" autocomplete="off">`}
-    <button class="primary" data-action="settle-scan">Scan partner's code</button>
-    <button class="secondary" data-action="settle-show">Show my code</button>
-    <div class="settle-links">
-      <button class="text-btn" data-action="settle-share">Send as a link</button>
-      <button class="text-btn" data-action="settle-paste">Paste a code</button>
-    </div>
-    <p class="hint">Each of you scans the other's code so both phones see the same total. Only the person who paid logs a split expense.</p>`);
+    ${syncOn() ? `
+      <div class="sync-box">
+        <div class="sync-row"><span>You</span><b id="sync-me">…</b></div>
+        <div class="sync-row"><span>Your partner</span><b id="sync-partner">Checking…</b></div>
+      </div>
+      <button class="primary" id="sync-settle" data-action="sync-settle" disabled>Settle ${monthLabel(key).split(' ')[0]}</button>
+      <button class="secondary" data-action="sync-upload">Upload ${monthLabel(key).split(' ')[0]}</button>
+      <p class="hint">Uploads happen on their own when you open the app. Settle works on either phone once you've both uploaded, and the log shows up on both.</p>
+      <details class="in-person">
+        <summary>Settle in person with a QR code</summary>
+        ${qrButtons}
+      </details>` : `
+      ${qrButtons}
+      <p class="hint">Each of you scans the other's code so both phones see the same total. Only the person who paid logs a split expense. To settle without meeting, set up <b>Partner sync</b> in Settings.</p>`}`);
+  if (syncOn()) refreshSyncStatus();
 }
 
 function openSettle() {
   settle.month ||= defaultSettleMonth();
   settle.view = 'home';
   settle.partner = null;
+  settle.viaSync = false;
   renderSettle();
+}
+
+// ---------- Partner sync (private GitHub repo) ----------
+// Each phone uploads its split expenses for a month to months/<YYYY-MM>/<deviceId>.json in a private repo.
+// When both are there, either phone can settle; that writes settlements/<YYYY-MM>.json, which both phones
+// read into their Settle-ups log. The repo and token are kept under their own key, out of backups and codes.
+
+const SYNC_KEY = 'budget-app-sync'; // { repo: 'owner/name', token, uploaded: { 'YYYY-MM': hash } }
+
+function syncConf() {
+  try {
+    return JSON.parse(localStorage.getItem(SYNC_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+const setSyncConf = (changes) => localStorage.setItem(SYNC_KEY, JSON.stringify({ ...syncConf(), ...changes }));
+const syncOn = () => !!(syncConf().repo && syncConf().token);
+
+// GitHub's file API needs base64 of UTF-8 bytes (notes and emoji aren't plain ASCII).
+const utf8ToB64 = (str) => btoa(Array.from(new TextEncoder().encode(str), (b) => String.fromCharCode(b)).join(''));
+const b64ToUtf8 = (b64) => new TextDecoder().decode(Uint8Array.from(atob(b64.replace(/\s/g, '')), (c) => c.charCodeAt(0)));
+
+async function github(path, options = {}) {
+  const { repo, token } = syncConf();
+  const res = await fetch(`https://api.github.com/repos/${repo}${path}`, {
+    ...options,
+    cache: 'no-store',
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${token}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    },
+  });
+  if (res.status === 404 && !options.method) return null; // a file or folder that doesn't exist yet
+  if (!res.ok) throw Object.assign(new Error(`GitHub ${res.status}`), { status: res.status });
+  return res.json();
+}
+
+async function syncRead(path) {
+  const file = await github(`/contents/${path}`);
+  return file && !Array.isArray(file) ? { sha: file.sha, data: JSON.parse(b64ToUtf8(file.content)) } : null;
+}
+
+async function syncWrite(path, data, message) {
+  const existing = await github(`/contents/${path}`); // overwriting a file needs its current version
+  return github(`/contents/${path}`, {
+    method: 'PUT',
+    body: JSON.stringify({ message, content: utf8ToB64(JSON.stringify(data, null, 1)), ...(existing?.sha ? { sha: existing.sha } : {}) }),
+  });
+}
+
+const syncList = async (dir) => {
+  const list = await github(`/contents/${dir}`);
+  return Array.isArray(list) ? list : [];
+};
+
+function syncError(e) {
+  if (e.status === 401) return 'GitHub rejected the token. It may have expired: make a new one and save it in Settings.';
+  if (e.status === 403) return "The token can't write to that repo. Give it Contents: Read and write.";
+  if (e.status === 404) return "Can't find that repo with this token. Check the name and the token's repo access.";
+  return "Couldn't reach GitHub. Check your connection and try again.";
+}
+
+// A fingerprint of a month's split expenses, to know whether they've changed since the last upload.
+function itemsHash(items) {
+  const s = JSON.stringify(items);
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+const uploadedHash = (month) => syncConf().uploaded?.[month];
+
+async function uploadMonth(month) {
+  const items = splitItems(month);
+  await syncWrite(`months/${month}/${db.deviceId}.json`,
+    { app: 'budget', v: 1, name: db.myName, deviceId: db.deviceId, month, uploadedAt: new Date().toISOString(), items },
+    `${db.myName}: split expenses for ${month}`);
+  setSyncConf({ uploaded: { ...syncConf().uploaded, [month]: itemsHash(items) } });
+}
+
+// The other person's upload for a month, or null if they haven't uploaded it yet.
+async function partnerUpload(month) {
+  const theirs = (await syncList(`months/${month}`)).find((f) => f.name.endsWith('.json') && f.name !== `${db.deviceId}.json`);
+  if (!theirs) return null;
+  const file = await syncRead(theirs.path);
+  const d = file?.data;
+  return d && { id: String(d.deviceId || ''), name: cleanName(d.name), month, items: cleanItems(d.items), uploadedAt: d.uploadedAt };
+}
+
+// Settlement file -> this phone's Settle-ups log entry, seen from this phone's side.
+function applySettlement(month, file) {
+  const people = file.data?.people || {};
+  const me = people[db.deviceId];
+  const otherId = Object.keys(people).find((id) => id !== db.deviceId);
+  if (!me || !otherId) return false; // not a settlement between this phone and a partner
+  const mineItems = cleanItems(me.items);
+  const theirItems = cleanItems(people[otherId].items);
+  const partner = cleanName(people[otherId].name);
+  const b = settleBreakdown(partner, month, mineItems, theirItems);
+  db.settlements[month] = {
+    date: /^\d{4}-\d{2}-\d{2}$/.test(file.data.settledOn) ? file.data.settledOn : todayISO(), partner, net: b.net,
+    mine: b.mineTotal, theirs: b.theirTotal, mineItems, theirItems, sha: file.sha, synced: true,
+  };
+  return true;
+}
+
+// Brings in settlements your partner made, so both phones' logs match.
+async function pullSettlements() {
+  let changed = false;
+  for (const f of await syncList('settlements')) {
+    const month = f.name.replace(/\.json$/, '');
+    if (!/^\d{4}-\d{2}$/.test(month) || month < db.startMonth || db.settlements[month]?.sha === f.sha) continue;
+    const file = await syncRead(f.path);
+    if (file && applySettlement(month, file)) changed = true;
+  }
+  if (changed) save();
+  return changed;
+}
+
+// On open: upload months whose split expenses changed, and pull in new settlements. Quiet unless it fails.
+async function autoSync() {
+  if (!syncOn() || !db.myName) return;
+  try {
+    for (const month of new Set([defaultSettleMonth(), monthKey()])) {
+      if (uploadedHash(month) !== itemsHash(splitItems(month))) await uploadMonth(month);
+    }
+    if (await pullSettlements()) render();
+  } catch {} // offline or token trouble: the Settle up screen shows the details
+}
+
+// Fills in the "You / Your partner" upload status on the Settle up screen.
+async function refreshSyncStatus() {
+  const meEl = document.getElementById('sync-me');
+  const partnerEl = document.getElementById('sync-partner');
+  const btn = document.getElementById('sync-settle');
+  if (!meEl) return;
+  const month = settle.month;
+  const current = itemsHash(splitItems(month));
+  meEl.textContent = !uploadedHash(month) ? 'Not uploaded yet'
+    : uploadedHash(month) === current ? 'Uploaded' : 'Changed since your last upload';
+  try {
+    if (await pullSettlements()) renderSettle(); // a settlement arrived while you were looking
+    const p = await partnerUpload(month);
+    if (settle.month !== month || !document.getElementById('sync-partner')) return; // moved on meanwhile
+    partnerEl.textContent = p
+      ? `${p.name} · uploaded ${new Date(p.uploadedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`
+      : `Hasn't uploaded ${monthLabel(month).split(' ')[0]} yet`;
+    btn.disabled = !p;
+  } catch (e) {
+    partnerEl.textContent = syncError(e);
+  }
+}
+
+async function syncUpload() {
+  if (needName()) return;
+  try {
+    await uploadMonth(settle.month);
+    toast(`${monthLabel(settle.month).split(' ')[0]} uploaded`);
+  } catch (e) {
+    toast(syncError(e));
+  }
+  refreshSyncStatus();
+}
+
+// Uploads your latest, fetches your partner's, and shows the result screen.
+async function syncSettle() {
+  if (needName()) return;
+  toast('Getting both uploads…');
+  try {
+    await uploadMonth(settle.month);
+    const p = await partnerUpload(settle.month);
+    if (!p) return toast("Your partner hasn't uploaded this month yet");
+    settle.partner = p;
+    settle.viaSync = true;
+    settle.view = 'result';
+    renderSettle();
+  } catch (e) {
+    toast(syncError(e));
+  }
+}
+
+// Saves the settlement to the repo so your partner's log gets it too.
+async function pushSettlement(month, mineItems, theirItems) {
+  const data = {
+    // settledOn is the local date (settledAt is UTC, which can already be "tomorrow" in the evening).
+    app: 'budget', v: 1, month, settledAt: new Date().toISOString(), settledOn: todayISO(), settledBy: db.deviceId,
+    people: {
+      [db.deviceId]: { name: db.myName, items: mineItems },
+      [settle.partner.id]: { name: settle.partner.name, items: theirItems },
+    },
+  };
+  const res = await syncWrite(`settlements/${month}.json`, data, `Settled ${month}`);
+  db.settlements[month].sha = res.content.sha;
+  db.settlements[month].synced = true;
+  save();
+}
+
+async function testSync() {
+  const status = document.getElementById('sync-status');
+  try {
+    const info = await github('');
+    if (!info) throw Object.assign(new Error('missing'), { status: 404 });
+    status.innerHTML = info.private
+      ? `Connected to <b>${esc(info.full_name)}</b>.`
+      : `Connected, but <b>${esc(info.full_name)}</b> is <b>public</b>. Make it private in the repo's settings, or anyone can see your split expenses.`;
+    autoSync();
+  } catch (e) {
+    status.textContent = syncError(e);
+  }
 }
 
 // Your name has to be set before your code goes to your partner.
@@ -1890,7 +2133,33 @@ const actions = {
     save();
     render();
     renderSettle();
-    toast(`${monthLabel(settle.month).split(' ')[0]} settled`);
+    const month = monthLabel(settle.month).split(' ')[0];
+    if (!settle.viaSync) return toast(`${month} settled`);
+    // Settled through sync: save it to the repo too, so it shows up in your partner's log.
+    pushSettlement(settle.month, mineItems, theirItems)
+      .then(() => toast(`${month} settled on both phones`))
+      .catch((e) => toast(`Settled here, but not saved for your partner: ${syncError(e)}`));
+  },
+  'sync-settle': () => syncSettle(),
+  'sync-upload': () => syncUpload(),
+  'sync-save'() {
+    const repo = val('sync-repo').trim().replace(/^https:\/\/github\.com\//, '').replace(/\.git$|\/$/g, '');
+    const token = val('sync-token').trim();
+    const name = val('sync-name').trim();
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return toast('Enter the repo as owner/name, like yuqian-cao-19/budget-sync');
+    if (!token) return toast('Paste your GitHub token');
+    if (!name) return toast('Add your name');
+    db.myName = name;
+    save();
+    setSyncConf({ repo, token });
+    document.getElementById('sync-status').textContent = 'Testing…';
+    testSync();
+  },
+  'sync-off'() {
+    if (!confirm('Turn off partner sync on this phone? Your settle-ups log stays.')) return;
+    localStorage.removeItem(SYNC_KEY);
+    render();
+    toast('Partner sync off');
   },
   async 'copy-settle-link'(el) {
     try {
@@ -2006,6 +2275,7 @@ document.addEventListener('visibilitychange', () => {
     startup();
     render();
     autoBackup();
+    autoSync();
     promptCloseOut();
   }
 });
@@ -2015,6 +2285,7 @@ document.addEventListener('visibilitychange', () => {
 startup();
 render();
 autoBackup();
+autoSync();
 handleSettleLink(); // a shared settle-up link wins over the month-end prompt
 promptCloseOut();
 
