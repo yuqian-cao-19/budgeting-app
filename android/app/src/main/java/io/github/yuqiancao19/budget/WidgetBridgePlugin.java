@@ -21,9 +21,9 @@ public class WidgetBridgePlugin extends Plugin {
             .putString("month", call.getString("month", ""))           // "2026-10"
             .putString("monthName", call.getString("monthName", ""))   // "October"
             .putLong("left", Math.round(call.getDouble("left", 0.0)))  // cents
-            .putLong("budget", Math.round(call.getDouble("budget", 0.0)))
+            .putLong("savings", Math.round(call.getDouble("savings", 0.0)))   // savings targets still affordable
             .putLong("spent", Math.round(call.getDouble("spent", 0.0)))
-            .putBoolean("showBudget", call.getBoolean("showBudget", true))
+            .putBoolean("showSavings", call.getBoolean("showSavings", true))
             .putBoolean("showSpent", call.getBoolean("showSpent", true))
             .putBoolean("showPerDay", call.getBoolean("showPerDay", false))
             .putBoolean("showDaysLeft", call.getBoolean("showDaysLeft", false))

@@ -110,6 +110,10 @@ function updateWidget() {
   const s = stats(key);
   // The most recent expense this month, for the 2×1 widget.
   const last = [...s.exps].sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt)[0];
+  // How much of this month's savings targets you can still put aside: what's left after bills and spending,
+  // up to the targets, never below zero. Overspending eats into savings first, then goes negative on Left.
+  const targets = savingsTargets();
+  const savings = Math.max(0, Math.min(targets, s.remaining));
   Native.WidgetBridge.update({
     lastEmoji: last ? cat(last.catId).emoji : '',
     lastName: last ? cat(last.catId).name : '',
@@ -118,10 +122,10 @@ function updateWidget() {
     lastDate: last?.date || '',
     month: key,
     monthName: monthLabel(key).split(' ')[0],
-    left: s.remaining - savingsTargets(), // same as the big number on Home
-    budget: s.budget + s.carry,
+    left: s.remaining - targets, // same as the big number on Home
+    savings,
     spent: s.spent,
-    showBudget: db.widget.budget,
+    showSavings: db.widget.savings,
     showSpent: db.widget.spent,
     showPerDay: db.widget.perDay,
     showDaysLeft: db.widget.daysLeft,
@@ -286,7 +290,11 @@ function startup() {
   db.deviceId ||= uid(); // tells your own settle-up code apart from your partner's
   db.myName ||= '';
   db.settlements ||= {}; // 'YYYY-MM' -> { date, partner, net, mine, theirs, mineItems, theirItems }
-  db.widget ||= { budget: true, spent: true, perDay: false, daysLeft: false }; // Android widget extras
+  db.widget ||= { savings: true, spent: true, perDay: false, daysLeft: false }; // Android widget extras
+  if (!('savings' in db.widget)) { // the 3×1 widget used to show Budget here
+    db.widget.savings = db.widget.budget ?? true;
+    delete db.widget.budget;
+  }
   applyTheme();
   delete db.sheet; // left over from the removed Google Sheet sync
   if (!db.funds) {
@@ -654,7 +662,7 @@ function settingsView() {
 
 // Android app only: which extras the home-screen widget shows besides Left to spend.
 function widgetCard() {
-  const opts = [['budget', 'Budget'], ['spent', 'Spent'], ['perDay', '~$/day'], ['daysLeft', 'Days left']];
+  const opts = [['savings', 'Savings'], ['spent', 'Spent'], ['perDay', '~$/day'], ['daysLeft', 'Days left']];
   return `
     <section class="card">
       <h2>Home-screen widget</h2>
@@ -668,6 +676,7 @@ function widgetCard() {
       <div class="chips">
         ${opts.map(([key, label]) => `<button class="chip ${db.widget[key] ? 'on' : ''}" data-action="toggle-widget" data-key="${key}">${label}</button>`).join('')}
       </div>
+      <p class="hint"><b>Savings</b> is how much of your savings targets you can still put aside this month. Spending past Left to spend lowers it first, down to $0. Text grows when you make a widget bigger.</p>
     </section>`;
 }
 

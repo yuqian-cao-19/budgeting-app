@@ -35,7 +35,7 @@
             android:id="@+id/widget_left"
             android:layout_width="match_parent"
             android:layout_height="28dp"
-            android:autoSizeMaxTextSize="20sp"
+            android:autoSizeMaxTextSize="80sp"
             android:autoSizeMinTextSize="10sp"
             android:autoSizeTextType="uniform"
             android:maxLines="1"
@@ -46,6 +46,7 @@
 
     <!-- divider (widgets can't use a plain View, so a 1dp-wide FrameLayout) -->
     <FrameLayout
+        android:id="@+id/widget_divider"
         android:layout_width="1dp"
         android:layout_height="34dp"
         android:layout_marginStart="10dp"

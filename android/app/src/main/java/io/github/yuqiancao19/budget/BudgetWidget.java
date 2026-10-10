@@ -7,8 +7,10 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.os.Build;
 import android.os.Bundle;
 import android.text.TextUtils;
+import android.util.TypedValue;
 import android.view.View;
 import android.widget.RemoteViews;
 
@@ -22,7 +24,7 @@ import java.util.Locale;
 
 /**
  * Home-screen widgets. Three sizes, each its own entry in the widget picker:
- *   3×1  Left to spend, plus Budget and Spent beside it (this class)
+ *   3×1  Left to spend, plus Savings and Spent beside it (this class)
  *   1×1  Left to spend only (BudgetWidgetSmall)
  *   2×1  Left to spend and the last expense, side by side (BudgetWidgetLast)
  * Numbers come from the app (see WidgetBridgePlugin). The widget only works out what depends on today's
@@ -96,9 +98,67 @@ public class BudgetWidget extends AppWidgetProvider {
         }
     }
 
+    /**
+     * How much bigger than the default to draw text, from the widget's current size. Each kind has the size
+     * (in dp) its default text was designed for; the smaller of the width and height ratios wins so text never
+     * outgrows the widget. Uses the minimum sizes, which hold on both screens of a foldable and in landscape.
+     */
+    private static float scaleFor(Kind kind, Bundle opts) {
+        int w = opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0);
+        int h = opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0);
+        if (w <= 0 || h <= 0) return 1f;
+        float baseW, baseH;
+        switch (kind) {
+            case SMALL: baseW = 70; baseH = 70; break;
+            case LAST: baseW = 170; baseH = 60; break;
+            default: baseW = 210; baseH = 60; break; // the big number fits itself to width, so width can be generous
+        }
+        return Math.max(1f, Math.min(2.6f, Math.min(w / baseW, h / baseH)));
+    }
+
+    private static void textSize(RemoteViews v, int id, float sp, float scale) {
+        v.setTextViewTextSize(id, TypedValue.COMPLEX_UNIT_SP, sp * scale);
+    }
+
+    // The big numbers shrink to fit their box, so a taller box means bigger text. (Android 12+; older
+    // versions keep the default box and the number stays its normal size.)
+    private static void boxHeight(RemoteViews v, int id, float dp, float scale) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) v.setViewLayoutHeight(id, dp * scale, TypedValue.COMPLEX_UNIT_DIP);
+    }
+
+    private static void applyScale(RemoteViews v, Kind kind, float s) {
+        switch (kind) {
+            case SMALL:
+                textSize(v, R.id.widget_label, 10, s);
+                boxHeight(v, R.id.widget_left, 28, s);
+                textSize(v, R.id.widget_left_unit, 10, s);
+                break;
+            case LAST:
+                textSize(v, R.id.widget_label, 9, s);
+                boxHeight(v, R.id.widget_left, 28, s);
+                boxHeight(v, R.id.widget_divider, 34, s);
+                textSize(v, R.id.widget_last_title, 12, s);
+                textSize(v, R.id.widget_last_amount, 14, s);
+                textSize(v, R.id.widget_last_when, 10, s);
+                break;
+            default:
+                // Savings and Spent sit in narrow columns, so they grow less than the big number to stay on screen.
+                float small = Math.min(s, 1.6f);
+                textSize(v, R.id.widget_label, 10, Math.min(s, 1.3f)); // the label is long; keep it on one line
+                boxHeight(v, R.id.widget_left, 32, s);
+                textSize(v, R.id.widget_sub, 11, small);
+                textSize(v, R.id.widget_savings, 13, small);
+                textSize(v, R.id.widget_savings_label, 10, small);
+                textSize(v, R.id.widget_spent, 13, small);
+                textSize(v, R.id.widget_spent_label, 10, small);
+        }
+    }
+
     private static void render(Context ctx, AppWidgetManager manager, int id, Kind kind) {
         SharedPreferences p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         RemoteViews v = new RemoteViews(ctx.getPackageName(), layoutFor(kind));
+        Bundle opts = manager.getAppWidgetOptions(id);
+        applyScale(v, kind, scaleFor(kind, opts));
 
         Intent open = new Intent(ctx, MainActivity.class);
         v.setOnClickPendingIntent(R.id.widget_root,
@@ -155,29 +215,28 @@ public class BudgetWidget extends AppWidgetProvider {
 
         v.setTextViewText(R.id.widget_label, shortMonth + " · LEFT TO SPEND");
 
-        // WIDE: optional ~$/day and days left under the number, Budget and Spent beside it.
+        // WIDE: optional ~$/day and days left under the number, Savings and Spent beside it.
         List<String> sub = new ArrayList<>();
         if (!current) {
             sub.add("New month: open the app to update");
         } else {
             int daysLeft = now.getActualMaximum(Calendar.DAY_OF_MONTH) - now.get(Calendar.DAY_OF_MONTH) + 1;
-            // Kept short (whole dollars, "23d") so it fits under the big number next to Budget and Spent.
+            // Kept short (whole dollars, "23d") so it fits under the big number next to Savings and Spent.
             if (p.getBoolean("showPerDay", false) && left > 0) sub.add("~" + moneyShort(left / daysLeft / 100 * 100) + "/day");
             if (p.getBoolean("showDaysLeft", false)) sub.add(daysLeft + "d left");
         }
         v.setTextViewText(R.id.widget_sub, TextUtils.join(" · ", sub));
         v.setViewVisibility(R.id.widget_sub, sub.isEmpty() ? View.GONE : View.VISIBLE);
 
-        // Budget and Spent only fit when the widget is about 3 cells wide or more.
-        Bundle opts = manager.getAppWidgetOptions(id);
+        // Savings and Spent only fit when the widget is about 3 cells wide or more.
         boolean wide = opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 0) >= WIDE_DP;
-        boolean showBudget = wide && p.getBoolean("showBudget", true);
+        boolean showSavings = wide && p.getBoolean("showSavings", true);
         boolean showSpent = wide && p.getBoolean("showSpent", true);
-        v.setTextViewText(R.id.widget_budget, moneyShort(p.getLong("budget", 0)));
+        v.setTextViewText(R.id.widget_savings, moneyShort(p.getLong("savings", 0)));
         v.setTextViewText(R.id.widget_spent, moneyShort(p.getLong("spent", 0)));
-        v.setViewVisibility(R.id.widget_budget_box, showBudget ? View.VISIBLE : View.GONE);
+        v.setViewVisibility(R.id.widget_savings_box, showSavings ? View.VISIBLE : View.GONE);
         v.setViewVisibility(R.id.widget_spent_box, showSpent ? View.VISIBLE : View.GONE);
-        v.setViewVisibility(R.id.widget_stats, showBudget || showSpent ? View.VISIBLE : View.GONE);
+        v.setViewVisibility(R.id.widget_stats, showSavings || showSpent ? View.VISIBLE : View.GONE);
 
         manager.updateAppWidget(id, v);
     }

@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Home-screen widget, one row high: Left to spend on the left; Budget and Spent beside it when it's wide
-     enough. Matches the app's dark navy card. BudgetWidget.java fills in the real numbers; the sample
-     numbers below only show in the widget picker's preview. -->
+<!-- 3×1 widget: Left to spend on the left; Savings and Spent beside it when it's wide enough. Matches the
+     app's dark navy card. BudgetWidget.java fills in the numbers and scales text with the widget's size
+     (the big number fits itself to its box, which the code makes taller as the widget grows).
+     The sample numbers below only show in the widget picker's preview. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_root"
     android:layout_width="match_parent"
@@ -34,12 +35,15 @@
 
         <TextView
             android:id="@+id/widget_left"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+            android:layout_width="match_parent"
+            android:layout_height="32dp"
+            android:autoSizeMaxTextSize="80sp"
+            android:autoSizeMinTextSize="12sp"
+            android:autoSizeTextType="uniform"
+            android:gravity="center_vertical"
             android:maxLines="1"
-            android:text="$1,779.57"
+            android:text="$1,500.00"
             android:textColor="#8EA8EA"
-            android:textSize="24sp"
             android:textStyle="bold" />
 
         <TextView
@@ -61,7 +65,7 @@
         android:orientation="horizontal">
 
         <LinearLayout
-            android:id="@+id/widget_budget_box"
+            android:id="@+id/widget_savings_box"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
@@ -69,19 +73,20 @@
             android:orientation="vertical">
 
             <TextView
-                android:id="@+id/widget_budget"
+                android:id="@+id/widget_savings"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:maxLines="1"
-                android:text="$4,000"
+                android:text="$500"
                 android:textColor="#E8ECF6"
                 android:textSize="13sp"
                 android:textStyle="bold" />
 
             <TextView
+                android:id="@+id/widget_savings_label"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Budget"
+                android:text="Savings"
                 android:textColor="#8F9AB5"
                 android:textSize="10sp" />
         </LinearLayout>
@@ -99,12 +104,13 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:maxLines="1"
-                android:text="$220.43"
+                android:text="$0"
                 android:textColor="#E8ECF6"
                 android:textSize="13sp"
                 android:textStyle="bold" />
 
             <TextView
+                android:id="@+id/widget_spent_label"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Spent"

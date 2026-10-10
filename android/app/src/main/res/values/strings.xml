@@ -4,7 +4,7 @@
     <string name="title_activity_main">Budget</string>
     <string name="package_name">io.github.yuqiancao19.budget</string>
     <string name="custom_url_scheme">io.github.yuqiancao19.budget</string>
-    <string name="widget_description">Left to spend, with Budget and Spent</string>
+    <string name="widget_description">Left to spend, with Savings and Spent</string>
     <string name="widget_small_description">Left to spend this month</string>
     <string name="widget_last_description">Left to spend and your last expense</string>
 </resources>

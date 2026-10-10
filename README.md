@@ -96,9 +96,9 @@ The same web app also ships as a real Android app, built with [Capacitor](https:
 - **A home-screen widget in three sizes.** Pick one in the widget picker under **Budget**:
   - **1×1:** Left to spend.
   - **2×1:** Left to spend and the last expense.
-  - **3×1:** Left to spend with Budget and Spent. Settings → **Home-screen widget** can add ~$/day and days left.
+  - **3×1:** Left to spend with **Savings** and Spent. Savings is how much of your savings targets you can still put aside: what's left after bills and spending, up to the targets. Overspending lowers it to $0 before Left to spend goes negative. Settings → **Home-screen widget** can add ~$/day and days left.
 
-  Widgets update whenever the app saves, and refresh daily for anything date-based ("Today", ~$/day, a new month).
+  Widgets update whenever the app saves, refresh daily for anything date-based ("Today", ~$/day, a new month), and scale their text up when you make them bigger.
 - **Automatic backups** to `Documents/budget-app-backup.json`. One file, updated each time you open the app if anything changed. It stays even if the app is deleted.
 
 How it's laid out: the web app stays in the repo root (GitHub Pages serves it as before). `android/` is the Android project, including the widget (`android/app/src/main/java/.../BudgetWidget.java`). `scripts/copy-web.mjs` copies the web files into the Android app at build time.
