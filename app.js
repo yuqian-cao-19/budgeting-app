@@ -384,6 +384,7 @@ function homeView() {
       ${stat('Fixed', fmtShort(s.fixed))}
       ${stat('Spent', fmtShort(s.spent))}
     </section>
+    ${syncOn() && isCurrent ? partnerCard(key, free) : ''}
     ${homeSavingsCard()}
     ${breakdownCard(s)}
     </div><div class="col">
@@ -689,6 +690,7 @@ function syncCard() {
       <h2>Partner sync</h2>
       <p class="hint" style="margin:0 0 4px">Settle up without meeting: both phones upload their split expenses to a <b>private</b> GitHub repo. Setup steps are in the README.</p>
       <input id="sync-name" class="text" placeholder="Your name (shown to your partner)" maxlength="30" autocomplete="off" value="${esc(db.myName)}">
+      <input id="sync-partner-name" class="text" placeholder="Partner's name, as they entered it (like Will)" maxlength="30" autocomplete="off" value="${esc(c.partnerName || '')}">
       <input id="sync-repo" class="text" placeholder="Repo, like yuqian-cao-19/budget-sync" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(c.repo || '')}">
       <input id="sync-token" class="text" type="password" placeholder="GitHub token" autocomplete="off" value="${esc(c.token || '')}">
       <button class="secondary" data-action="sync-save">${syncOn() ? 'Save and test again' : 'Save and test'}</button>
@@ -1655,13 +1657,24 @@ async function uploadMonth(month) {
   setSyncConf({ uploaded: { ...syncConf().uploaded, [month]: itemsHash(items) } });
 }
 
-// The other person's upload for a month, or null if they haven't uploaded it yet.
+const sameName = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+
+// Your partner's upload for a month, or null if they haven't uploaded it yet. The folder can hold extra files
+// (old test uploads, or a reinstalled app that got a new phone id), so: skip anything that's yours (this
+// phone's id, or your name), keep uploads under your partner's name if one is set, and use the newest.
 async function partnerUpload(month) {
-  const theirs = (await syncList(`months/${month}`)).find((f) => f.name.endsWith('.json') && f.name !== `${db.deviceId}.json`);
-  if (!theirs) return null;
-  const file = await syncRead(theirs.path);
-  const d = file?.data;
-  return d && { id: String(d.deviceId || ''), name: cleanName(d.name), month, items: cleanItems(d.items), uploadedAt: d.uploadedAt };
+  const files = (await syncList(`months/${month}`))
+    .filter((f) => f.name.endsWith('.json') && f.name !== `${db.deviceId}.json`);
+  const partnerName = syncConf().partnerName;
+  const uploads = [];
+  for (const f of files) {
+    const d = (await syncRead(f.path))?.data;
+    if (!d || sameName(d.name, db.myName)) continue;
+    if (partnerName && !sameName(d.name, partnerName)) continue;
+    uploads.push({ id: String(d.deviceId || ''), name: cleanName(d.name), month, items: cleanItems(d.items), uploadedAt: d.uploadedAt });
+  }
+  uploads.sort((a, b) => String(b.uploadedAt).localeCompare(String(a.uploadedAt))); // ISO times sort as text
+  return uploads[0] || null;
 }
 
 // Settlement file -> this phone's Settle-ups log entry, seen from this phone's side.
@@ -1694,15 +1707,80 @@ async function pullSettlements() {
   return changed;
 }
 
-// On open: upload months whose split expenses changed, and pull in new settlements. Quiet unless it fails.
+// On open: upload months whose split expenses changed, pull in new settlements, and fetch your partner's
+// upload for this month for the Home card. Quiet unless it fails.
 async function autoSync() {
   if (!syncOn() || !db.myName) return;
   try {
     for (const month of new Set([defaultSettleMonth(), monthKey()])) {
       if (uploadedHash(month) !== itemsHash(splitItems(month))) await uploadMonth(month);
     }
-    if (await pullSettlements()) render();
-  } catch {} // offline or token trouble: the Settle up screen shows the details
+    await pullSettlements();
+    await refreshPartner(monthKey());
+  } catch (e) {
+    setSyncConf({ partner: { ...syncConf().partner, error: syncError(e), checkedAt: Date.now() } });
+  }
+  render();
+}
+
+// Keeps a copy of your partner's latest upload for the month, so Home can show the balance (even offline).
+// The math is redone on every render, so your own new expenses count right away.
+async function refreshPartner(month) {
+  const p = await partnerUpload(month);
+  const prev = syncConf().partner || {};
+  setSyncConf({
+    partner: {
+      month, checkedAt: Date.now(), error: null,
+      name: p?.name || prev.name || null, // the card says "your partner" until their name is known
+      items: p ? p.items : null, // null = hasn't uploaded this month yet
+      uploadedAt: p?.uploadedAt || null,
+    },
+  });
+}
+
+const shortTime = (ms) => new Date(ms).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+// Home: who owes whom this month, worked out from both uploads, and what you can really spend once your
+// half of your partner's split expenses (which only they logged) is counted.
+function partnerCard(key, free) {
+  const c = syncConf().partner;
+  const monthName = monthLabel(key).split(' ')[0];
+  const name = esc(c?.name || 'your partner');
+  const refresh = '<button class="link-btn" data-action="refresh-partner">Refresh</button>';
+  const checked = c?.checkedAt ? `Checked ${shortTime(c.checkedAt)}` : '';
+  let body;
+  if (!c || c.month !== key) {
+    body = `<p class="hint">Checking for ${name}'s ${monthName} upload… ${refresh}</p>`;
+  } else if (!c.items) {
+    body = `<p class="hint">Waiting for ${name} to upload ${monthName}. It happens when they open the app.</p>
+      <p class="partner-meta">${checked} · ${refresh}</p>`;
+  } else {
+    const mine = splitItems(key);
+    const b = settleBreakdown(c.name, key, mine, c.items);
+    const owedByMe = c.items.reduce((sum, [, a]) => sum + otherHalf(a), 0);
+    const real = free - owedByMe;
+    const rec = db.settlements[key];
+    const settledNow = rec && rec.mine === b.mineTotal && rec.theirs === b.theirTotal; // nothing changed since settling
+    // Once a month is settled, only what's changed since then is still owed.
+    const owed = rec ? b.net - rec.net : b.net;
+    const headline = settledNow ? `${monthName} settled: ${settledText(rec)}`
+      : !owed ? `You and ${name} are even` : owed > 0 ? `${name} owes you` : `You owe ${name}`;
+    body = `
+      <div class="partner-head ${!settledNow && owed < 0 ? 'neg' : ''}">
+        <span>${headline}</span>${!settledNow && owed ? `<b>${fmt(Math.abs(owed))}</b>` : ''}
+      </div>
+      ${rec && !settledNow ? `<p class="hint" style="margin-top:2px">Since you settled ${/^(Today|Yesterday)$/.test(dayLabel(rec.date))
+        ? dayLabel(rec.date).toLowerCase() : `on ${dayLabel(rec.date)}`} (${settledText(rec)}).</p>` : ''}
+      <div class="partner-real"><b class="${real < 0 ? 'neg' : ''}">${fmtLeft(real)}</b> real left to spend</div>
+      <p class="hint" style="margin-top:2px">Left to spend minus your half of ${name}'s split expenses (${fmt(owedByMe)}).</p>
+      <p class="partner-meta">${name}'s upload from ${shortTime(new Date(c.uploadedAt).getTime())} · ${checked} · ${refresh}</p>`;
+  }
+  return `
+    <section class="card partner-card">
+      <h2>With ${name} <small>${monthName}</small></h2>
+      ${body}
+      ${c?.error ? `<p class="hint neg-text">Couldn't update: ${esc(c.error)}</p>` : ''}
+    </section>`;
 }
 
 // Fills in the "You / Your partner" upload status on the Settle up screen.
@@ -2142,6 +2220,12 @@ const actions = {
   },
   'sync-settle': () => syncSettle(),
   'sync-upload': () => syncUpload(),
+  async 'refresh-partner'() {
+    toast('Checking…');
+    await autoSync(); // also uploads your latest first, so both sides are current
+    const c = syncConf().partner;
+    toast(c?.error ? c.error : c?.items ? 'Up to date' : `${c?.name || 'Your partner'} hasn't uploaded this month yet`);
+  },
   'sync-save'() {
     const repo = val('sync-repo').trim().replace(/^https:\/\/github\.com\//, '').replace(/\.git$|\/$/g, '');
     const token = val('sync-token').trim();
@@ -2149,9 +2233,13 @@ const actions = {
     if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return toast('Enter the repo as owner/name, like yuqian-cao-19/budget-sync');
     if (!token) return toast('Paste your GitHub token');
     if (!name) return toast('Add your name');
+    const partnerName = val('sync-partner-name').trim();
+    if (partnerName && sameName(partnerName, name)) return toast("Your partner's name can't be the same as yours");
     db.myName = name;
     save();
-    setSyncConf({ repo, token });
+    // A new partner name means the cached balance on Home may be someone else's: fetch it again.
+    if (!sameName(partnerName, syncConf().partnerName)) setSyncConf({ partner: null });
+    setSyncConf({ repo, token, partnerName });
     document.getElementById('sync-status').textContent = 'Testing…';
     testSync();
   },

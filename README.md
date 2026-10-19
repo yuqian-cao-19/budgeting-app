@@ -74,6 +74,7 @@ How it works day to day:
 - **Mark settled** saves one settlement file to the repo. The other phone picks it up the next time it opens, and the log appears there too, from that person's side ("You paid Rain $10").
 - **Changes after settling are caught.** If split expenses change later, both phones flag that the month needs settling again.
 - **QR codes still work** for settling in person, under **Settle in person with a QR code**.
+- **Home shows the balance live.** A **With Will** card under Left to spend says who owes whom this month ("Will owes you $10.00"), worked out from your latest entries and Will's last upload. It also shows your **real left to spend**: Left to spend minus your half of Will's split expenses, which only Will logs. The card shows when Will's data is from and when it was last checked, with a **Refresh** button. After you mark a month settled, it shows only what's changed since then.
 
 What goes in the repo: `months/<month>/<phone id>.json` (each person's split expenses for the month) and `settlements/<month>.json`. Nothing else from the app is uploaded.
 
@@ -86,7 +87,9 @@ What goes in the repo: `months/<month>/<phone id>.json` (each person's split exp
    - Under **Repository access**, choose **Only select repositories**, then **budget-sync**.
    - Under **Permissions → Repository permissions**, set **Contents** to **Read and write**.
    - Click **Generate token** and copy it. GitHub shows it only once.
-3. **On each phone,** open **Settings → Partner sync**. Enter your name, the repo (`yuqian-cao-19/budget-sync`), and the token, then tap **Save and test**. It should say **Connected**. You can both use the same token.
+3. **On each phone,** open **Settings → Partner sync**. Enter your name, your **partner's name** (exactly as they entered theirs, though capitals don't matter), the repo (`yuqian-cao-19/budget-sync`), and the token, then tap **Save and test**. It should say **Connected**. You can both use the same token.
+
+Which upload counts as your partner's: the app ignores your own uploads (this phone's, plus any older ones under your name, such as from before a reinstall), keeps only uploads under your partner's name, and uses the most recent. Leave the partner's name blank and it uses the most recent upload that isn't yours. Setting it means stray test files can't get mixed in.
 
 When the token expires, make a new one the same way and paste it into both phones.
 
