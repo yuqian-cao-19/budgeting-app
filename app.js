@@ -164,11 +164,20 @@ const savingsTargets = () => activeFunds('flex').reduce((sum, f) => sum + f.targ
 // Money moved from a month's leftovers into flexible savings when that month was closed out.
 const depositsFrom = (key) => db.fundTx.reduce((sum, t) => (t.kind === 'deposit' && t.month === key ? sum + t.amount : sum), 0);
 
+// Your half of your partner's split expenses for a month. Only they log those, so without this your budget
+// would miss part of your own spending. Comes from their latest upload (partner sync), or from the month's
+// settlement if that's all there is; 0 when neither exists.
+function partnerShare(key) {
+  const items = syncConf().partners?.[key]?.items || db.settlements[key]?.theirItems;
+  return items ? items.reduce((sum, [, a]) => sum + otherHalf(a), 0) : 0;
+}
+
 function stats(key) {
   const m = db.months[key] || newMonth();
   const fixed = Object.values(m.fixed).reduce((a, b) => a + b, 0);
   const exps = expensesIn(key);
   const spent = exps.reduce((a, e) => a + counted(e), 0);
+  const partner = partnerShare(key);
   let carry = 0;
   if (key === db.startMonth) carry = db.startCarry;
   else if (key > db.startMonth) {
@@ -176,7 +185,10 @@ function stats(key) {
     carry = prev.remaining - prev.saved; // what was left after moving money into savings
   }
   const available = m.budget + carry - fixed;
-  return { budget: m.budget, fixed, spent, carry, available, remaining: available - spent, saved: depositsFrom(key), exps };
+  return {
+    budget: m.budget, fixed, spent, partner, carry, available,
+    remaining: available - spent - partner, saved: depositsFrom(key), exps,
+  };
 }
 
 // Past months whose leftovers haven't been moved into savings yet, oldest first.
@@ -354,6 +366,10 @@ function homeView() {
         <div><b>${fmt(setAside)}</b> ${isCurrent ? 'for savings' : 'to savings'}</div>
       </div>`
     : '';
+  // The sum behind the big number: budget − fixed − spent − partner's splits − savings.
+  const num = (c) => fmtShort(Math.abs(c)).replace('$', '');
+  const terms = [s.fixed, s.spent, s.partner, setAside].filter(Boolean);
+  const equation = `${s.budget + s.carry < 0 ? '−' : ''}${num(s.budget + s.carry)}${terms.map((t) => ` ${t < 0 ? '+' : '−'} ${num(t)}`).join('')}`;
 
   const pending = unclosedMonth();
   const setup = !db.budget
@@ -375,6 +391,7 @@ function homeView() {
     <section class="card hero ${neg ? 'neg' : ''}">
       <div class="hero-label">${isCurrent ? 'Left to spend' : 'Left over'}</div>
       <div class="hero-amount">${fmtLeft(free)}</div>
+      ${db.budget ? `<div class="hero-equation">${equation}</div>` : ''}
       <div class="meter"><span style="width:${pctLeft}%"></span></div>
       ${sub ? `<div class="hero-sub">${sub}</div>` : ''}
       ${actual}
@@ -384,7 +401,7 @@ function homeView() {
       ${stat('Fixed', fmtShort(s.fixed))}
       ${stat('Spent', fmtShort(s.spent))}
     </section>
-    ${syncOn() && isCurrent ? partnerCard(key, free) : ''}
+    ${syncOn() || s.partner ? partnerStatsCard(key, s) : ''}
     ${homeSavingsCard()}
     ${breakdownCard(s)}
     </div><div class="col">
@@ -1708,78 +1725,85 @@ async function pullSettlements() {
 }
 
 // On open: upload months whose split expenses changed, pull in new settlements, and fetch your partner's
-// upload for this month for the Home card. Quiet unless it fails.
+// uploads (this month, plus last month early in a new one). Quiet unless it fails.
 async function autoSync() {
   if (!syncOn() || !db.myName) return;
+  const months = [...new Set([defaultSettleMonth(), monthKey()])];
   try {
-    for (const month of new Set([defaultSettleMonth(), monthKey()])) {
+    for (const month of months) {
       if (uploadedHash(month) !== itemsHash(splitItems(month))) await uploadMonth(month);
     }
     await pullSettlements();
-    await refreshPartner(monthKey());
+    for (const month of months) await refreshPartner(month);
   } catch (e) {
-    setSyncConf({ partner: { ...syncConf().partner, error: syncError(e), checkedAt: Date.now() } });
+    const partners = syncConf().partners || {};
+    const now = monthKey();
+    setSyncConf({ partners: { ...partners, [now]: { ...partners[now], error: syncError(e), checkedAt: Date.now() } } });
   }
   render();
 }
 
-// Keeps a copy of your partner's latest upload for the month, so Home can show the balance (even offline).
+// Keeps a copy of your partner's latest upload for each month, so the numbers work offline too.
 // The math is redone on every render, so your own new expenses count right away.
 async function refreshPartner(month) {
   const p = await partnerUpload(month);
-  const prev = syncConf().partner || {};
+  const partners = syncConf().partners || {};
+  const prev = partners[month] || {};
   setSyncConf({
-    partner: {
-      month, checkedAt: Date.now(), error: null,
-      name: p?.name || prev.name || null, // the card says "your partner" until their name is known
-      items: p ? p.items : null, // null = hasn't uploaded this month yet
-      uploadedAt: p?.uploadedAt || null,
+    partners: {
+      ...partners,
+      [month]: {
+        checkedAt: Date.now(), error: null,
+        // Keep the last copy if they haven't uploaded again; null items = they haven't uploaded this month.
+        name: p?.name || prev.name || syncConf().partnerName || null,
+        items: p ? p.items : prev.items || null,
+        uploadedAt: p?.uploadedAt || prev.uploadedAt || null,
+      },
     },
   });
 }
 
 const shortTime = (ms) => new Date(ms).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
-// Home: who owes whom this month, worked out from both uploads, and what you can really spend once your
-// half of your partner's split expenses (which only they logged) is counted.
-function partnerCard(key, free) {
-  const c = syncConf().partner;
-  const monthName = monthLabel(key).split(' ')[0];
-  const name = esc(c?.name || 'your partner');
-  const refresh = '<button class="link-btn" data-action="refresh-partner">Refresh</button>';
-  const checked = c?.checkedAt ? `Checked ${shortTime(c.checkedAt)}` : '';
-  let body;
-  if (!c || c.month !== key) {
-    body = `<p class="hint">Checking for ${name}'s ${monthName} upload… ${refresh}</p>`;
-  } else if (!c.items) {
-    body = `<p class="hint">Waiting for ${name} to upload ${monthName}. It happens when they open the app.</p>
-      <p class="partner-meta">${checked} · ${refresh}</p>`;
-  } else {
-    const mine = splitItems(key);
-    const b = settleBreakdown(c.name, key, mine, c.items);
-    const owedByMe = c.items.reduce((sum, [, a]) => sum + otherHalf(a), 0);
-    const real = free - owedByMe;
-    const rec = db.settlements[key];
-    const settledNow = rec && rec.mine === b.mineTotal && rec.theirs === b.theirTotal; // nothing changed since settling
-    // Once a month is settled, only what's changed since then is still owed.
-    const owed = rec ? b.net - rec.net : b.net;
-    const headline = settledNow ? `${monthName} settled: ${settledText(rec)}`
-      : !owed ? `You and ${name} are even` : owed > 0 ? `${name} owes you` : `You owe ${name}`;
-    body = `
-      <div class="partner-head ${!settledNow && owed < 0 ? 'neg' : ''}">
-        <span>${headline}</span>${!settledNow && owed ? `<b>${fmt(Math.abs(owed))}</b>` : ''}
-      </div>
-      ${rec && !settledNow ? `<p class="hint" style="margin-top:2px">Since you settled ${/^(Today|Yesterday)$/.test(dayLabel(rec.date))
-        ? dayLabel(rec.date).toLowerCase() : `on ${dayLabel(rec.date)}`} (${settledText(rec)}).</p>` : ''}
-      <div class="partner-real"><b class="${real < 0 ? 'neg' : ''}">${fmtLeft(real)}</b> real left to spend</div>
-      <p class="hint" style="margin-top:2px">Left to spend minus your half of ${name}'s split expenses (${fmt(owedByMe)}).</p>
-      <p class="partner-meta">${name}'s upload from ${shortTime(new Date(c.uploadedAt).getTime())} · ${checked} · ${refresh}</p>`;
+// "11:08 AM" today, otherwise "Oct 18, 9:14 PM".
+function whenText(ms) {
+  const d = new Date(ms);
+  return isoOf(d) === todayISO()
+    ? d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+    : shortTime(ms);
+}
+
+// Under Budget / Fixed / Spent, in the same style: your half of your partner's split expenses (already taken
+// out of Left to spend), who owes whom, and when the partner's numbers were last checked.
+function partnerStatsCard(key, s) {
+  const c = syncConf().partners?.[key];
+  const rec = db.settlements[key];
+  const name = esc(c?.name || rec?.partner || syncConf().partnerName || 'Partner');
+  const theirItems = c?.items || rec?.theirItems;
+  let owedValue = '—';
+  let owedLabel = 'Balance';
+  if (theirItems) {
+    const b = settleBreakdown(name, key, splitItems(key), theirItems);
+    const settledNow = rec && rec.mine === b.mineTotal && rec.theirs === b.theirTotal;
+    const owed = rec ? b.net - rec.net : b.net; // after settling, only what's changed since then
+    if (settledNow) [owedValue, owedLabel] = ['✓', 'Settled'];
+    else if (!owed) [owedValue, owedLabel] = ['$0', 'Even'];
+    else [owedValue, owedLabel] = [fmtShort(Math.abs(owed)), owed > 0 ? `${name} owes you` : `You owe ${name}`];
   }
+  const updated = c?.checkedAt ? whenText(c.checkedAt) : '—';
+  const note = !syncOn() ? `From the ${monthLabel(key).split(' ')[0]} settlement`
+    : c?.error ? `<span class="neg-text">Couldn't update: ${esc(c.error)}</span>`
+      : !c ? 'Checking…'
+        : !c.items ? `Waiting for ${name}'s upload`
+          : `${name}'s upload from ${whenText(new Date(c.uploadedAt).getTime())}`;
   return `
-    <section class="card partner-card">
-      <h2>With ${name} <small>${monthName}</small></h2>
-      ${body}
-      ${c?.error ? `<p class="hint neg-text">Couldn't update: ${esc(c.error)}</p>` : ''}
+    <section class="card stats partner-stats" ${syncOn() ? 'data-action="refresh-partner" role="button" tabindex="0"' : ''}>
+      <div class="stats-row">
+        ${stat(`${name}'s splits`, fmtShort(s.partner))}
+        ${stat(owedLabel, owedValue)}
+        ${stat('Updated', updated)}
+      </div>
+      <p class="partner-meta">${note}${syncOn() ? ' · tap to refresh' : ''}</p>
     </section>`;
 }
 
@@ -2223,7 +2247,7 @@ const actions = {
   async 'refresh-partner'() {
     toast('Checking…');
     await autoSync(); // also uploads your latest first, so both sides are current
-    const c = syncConf().partner;
+    const c = syncConf().partners?.[monthKey()];
     toast(c?.error ? c.error : c?.items ? 'Up to date' : `${c?.name || 'Your partner'} hasn't uploaded this month yet`);
   },
   'sync-save'() {
@@ -2238,7 +2262,7 @@ const actions = {
     db.myName = name;
     save();
     // A new partner name means the cached balance on Home may be someone else's: fetch it again.
-    if (!sameName(partnerName, syncConf().partnerName)) setSyncConf({ partner: null });
+    if (!sameName(partnerName, syncConf().partnerName)) setSyncConf({ partners: {} });
     setSyncConf({ repo, token, partnerName });
     document.getElementById('sync-status').textContent = 'Testing…';
     testSync();

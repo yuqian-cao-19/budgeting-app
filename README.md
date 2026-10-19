@@ -74,7 +74,7 @@ How it works day to day:
 - **Mark settled** saves one settlement file to the repo. The other phone picks it up the next time it opens, and the log appears there too, from that person's side ("You paid Rain $10").
 - **Changes after settling are caught.** If split expenses change later, both phones flag that the month needs settling again.
 - **QR codes still work** for settling in person, under **Settle in person with a QR code**.
-- **Home shows the balance live.** A **With Will** card under Left to spend says who owes whom this month ("Will owes you $10.00"), worked out from your latest entries and Will's last upload. It also shows your **real left to spend**: Left to spend minus your half of Will's split expenses, which only Will logs. The card shows when Will's data is from and when it was last checked, with a **Refresh** button. After you mark a month settled, it shows only what's changed since then.
+- **Your partner's split expenses count in Left to spend.** Only the person who paid logs a split expense, so the app takes your half of your partner's (from their latest upload) out of the big **Left to spend** number. The same goes for History, the end-of-month close-out, the rollover into next month, and the widget. A card under Budget / Fixed / Spent shows **Will's splits** (your half), who owes whom this month (after settling, only what's changed since), and when it was last **Updated**, with Will's upload time underneath. Tap the card to refresh.
 
 What goes in the repo: `months/<month>/<phone id>.json` (each person's split expenses for the month) and `settlements/<month>.json`. Nothing else from the app is uploaded.
 

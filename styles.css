@@ -91,6 +91,7 @@ main {
   color: var(--accent); margin: 10px 0 14px; font-variant-numeric: tabular-nums;
 }
 .hero.neg .hero-amount { color: var(--neg); }
+.hero-equation { margin: -8px 0 14px; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 .meter { height: 10px; border-radius: 99px; background: var(--chip); overflow: hidden; }
 .meter span { display: block; height: 100%; background: var(--accent); border-radius: inherit; transition: width .3s; }
 .hero-sub { margin-top: 10px; color: var(--muted); font-size: 14px; }
@@ -231,13 +232,11 @@ main {
 .backup-file b { color: var(--text); }
 .link-btn { color: var(--accent); font-weight: 650; }
 .widget-sizes { margin: 0 0 4px; padding-left: 18px; line-height: 1.6; }
-.partner-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 16px; font-weight: 650; }
-.partner-head b { font-size: 24px; color: var(--accent); font-variant-numeric: tabular-nums; }
-.partner-head.neg b { color: var(--neg); }
-.partner-real { margin-top: 10px; color: var(--muted); font-size: 15px; }
-.partner-real b { color: var(--text); font-size: 17px; font-variant-numeric: tabular-nums; }
-.partner-real b.neg, .neg-text { color: var(--neg); }
-.partner-meta { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+/* Partner card: same look as Budget / Fixed / Spent, plus a one-line footnote */
+.partner-stats { display: block; padding-bottom: 10px; cursor: pointer; }
+.stats-row { display: flex; }
+.partner-meta { margin: 8px 0 0; text-align: center; color: var(--muted); font-size: 12px; }
+.neg-text { color: var(--neg); }
 .sync-box { margin: 4px 0 2px; padding: 4px 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--chip); }
 .sync-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; font-size: 14px; }
 .sync-row + .sync-row { border-top: 1px solid var(--border); }
