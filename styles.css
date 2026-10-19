@@ -273,6 +273,21 @@ main {
 .settle-list h3 + .row { border-top: 0; }
 textarea.text { resize: none; line-height: 1.4; word-break: break-all; }
 
+/* Partner's categories matched to yours */
+.unmapped { color: var(--warn); font-size: 12px; font-weight: 600; }
+.bar-row.tappable { cursor: pointer; }
+.settle-map { margin: 14px 0 4px; }
+.settle-map h3 { margin: 0 0 4px; font-size: 15px; }
+.map-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
+.map-row:first-of-type, .card h2 + .hint + .map-row { border-top: 0; }
+.map-arrow { color: var(--muted); }
+.map-row select {
+  flex: none; width: 54%; min-height: 40px; padding: 0 8px;
+  border: 2px solid transparent; border-radius: 10px; background: var(--chip); font-size: 16px;
+}
+.map-row select.need { border-color: var(--warn); color: var(--muted); }
+.month-nav .spacer { visibility: hidden; }
+
 /* ---------- Bottom bar ---------- */
 
 .add-btn {

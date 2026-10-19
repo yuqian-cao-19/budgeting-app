@@ -75,6 +75,7 @@ function freshDb() {
     startCarry: 0, // rollover into startMonth (preserved when old months are pruned)
     rules: {}, // merchant key -> catId, learned from imports
     ignoredImports: [], // importIds of bank charges you chose not to import
+    catMap: {}, // partner's category name (lowercase) -> your category id
     theme: 'dark', // 'dark' | 'light' | 'system'
     // Savings: a fund's balance is `base` plus its transactions. Old transactions fold into `base` when pruned.
     // `auto` = fixed amount added on the 1st; `target` = flexible amount set aside from leftovers. A fund can have both.
@@ -164,20 +165,40 @@ const savingsTargets = () => activeFunds('flex').reduce((sum, f) => sum + f.targ
 // Money moved from a month's leftovers into flexible savings when that month was closed out.
 const depositsFrom = (key) => db.fundTx.reduce((sum, t) => (t.kind === 'deposit' && t.month === key ? sum + t.amount : sum), 0);
 
-// Your half of your partner's split expenses for a month. Only they log those, so without this your budget
-// would miss part of your own spending. Comes from their latest upload (partner sync), or from the month's
-// settlement if that's all there is; 0 when neither exists.
-function partnerShare(key) {
-  const items = syncConf().partners?.[key]?.items || db.settlements[key]?.theirItems;
-  return items ? items.reduce((sum, [, a]) => sum + otherHalf(a), 0) : 0;
+// Your partner's split expenses for a month. Only they log those, so without them your budget would miss
+// part of your own spending. Comes from their latest upload (partner sync), or from the month's settlement
+// if that's all there is.
+const partnerItems = (key) => syncConf().partners?.[key]?.items || db.settlements[key]?.theirItems || [];
+const partnerLabel = (key) =>
+  syncConf().partners?.[key]?.name || db.settlements[key]?.partner || syncConf().partnerName || 'Your partner';
+// Your half of them.
+const partnerShare = (key) => partnerItems(key).reduce((sum, [, a]) => sum + otherHalf(a), 0);
+
+// Which of your categories each of your partner's categories counts toward. Their uploads carry only the
+// category name, so the mapping is keyed by it. A name that matches one of yours maps on its own.
+const catKey = (name) => String(name).trim().toLowerCase();
+function mappedCat(name) {
+  const id = db.catMap[catKey(name)];
+  if (id && db.categories.some((c) => c.id === id && !c.deleted)) return id;
+  return activeCats('flex').find((c) => catKey(c.name) === catKey(name))?.id || null;
+}
+
+// Every category name your partner has used, with its emoji, from uploads and settlements on this phone.
+function partnerCats() {
+  const all = new Map();
+  const lists = [...Object.values(syncConf().partners || {}).map((p) => p.items),
+    ...Object.values(db.settlements).map((r) => r.theirItems)];
+  for (const items of lists) for (const [, , emoji, name] of items || []) if (name && !all.has(catKey(name))) all.set(catKey(name), { name, emoji });
+  return [...all.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function stats(key) {
   const m = db.months[key] || newMonth();
   const fixed = Object.values(m.fixed).reduce((a, b) => a + b, 0);
   const exps = expensesIn(key);
-  const spent = exps.reduce((a, e) => a + counted(e), 0);
+  const mine = exps.reduce((a, e) => a + counted(e), 0);
   const partner = partnerShare(key);
+  const spent = mine + partner; // includes your half of what your partner paid
   let carry = 0;
   if (key === db.startMonth) carry = db.startCarry;
   else if (key > db.startMonth) {
@@ -186,8 +207,8 @@ function stats(key) {
   }
   const available = m.budget + carry - fixed;
   return {
-    budget: m.budget, fixed, spent, partner, carry, available,
-    remaining: available - spent - partner, saved: depositsFrom(key), exps,
+    budget: m.budget, fixed, spent, mine, partner, carry, available,
+    remaining: available - spent, saved: depositsFrom(key), exps,
   };
 }
 
@@ -302,6 +323,7 @@ function startup() {
   db.deviceId ||= uid(); // tells your own settle-up code apart from your partner's
   db.myName ||= '';
   db.settlements ||= {}; // 'YYYY-MM' -> { date, partner, net, mine, theirs, mineItems, theirItems }
+  db.catMap ||= {}; // partner's category name (lowercase) -> your category id
   db.widget ||= { savings: true, spent: true, perDay: false, daysLeft: false }; // Android widget extras
   if (!('savings' in db.widget)) { // the 3×1 widget used to show Budget here
     db.widget.savings = db.widget.budget ?? true;
@@ -330,9 +352,10 @@ const ui = { view: 'home', month: monthKey() };
 const $app = document.getElementById('app');
 
 function render() {
-  const views = { home: homeView, savings: savingsView, history: historyView, settings: settingsView };
+  const views = { home: homeView, savings: savingsView, history: historyView, month: monthView, settings: settingsView };
   $app.innerHTML = (views[ui.view] || homeView)();
-  document.querySelectorAll('.tabbar [data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === ui.view));
+  const tab = ui.view === 'month' ? 'history' : ui.view; // a month's page is part of History
+  document.querySelectorAll('.tabbar [data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === tab));
   document.body.classList.toggle('no-add', ui.view === 'settings' || ui.view === 'savings');
   document.body.classList.toggle('on-home', ui.view === 'home');
 }
@@ -366,9 +389,9 @@ function homeView() {
         <div><b>${fmt(setAside)}</b> ${isCurrent ? 'for savings' : 'to savings'}</div>
       </div>`
     : '';
-  // The sum behind the big number: budget − fixed − spent − partner's splits − savings.
+  // The sum behind the big number: budget − fixed − spent − savings.
   const num = (c) => fmtShort(Math.abs(c)).replace('$', '');
-  const terms = [s.fixed, s.spent, s.partner, setAside].filter(Boolean);
+  const terms = [s.fixed, s.spent, setAside].filter(Boolean);
   const equation = `${s.budget + s.carry < 0 ? '−' : ''}${num(s.budget + s.carry)}${terms.map((t) => ` ${t < 0 ? '+' : '−'} ${num(t)}`).join('')}`;
 
   const pending = unclosedMonth();
@@ -403,7 +426,7 @@ function homeView() {
     </section>
     ${syncOn() || s.partner ? partnerStatsCard(key, s) : ''}
     ${homeSavingsCard()}
-    ${breakdownCard(s)}
+    ${breakdownCard(key, s)}
     </div><div class="col">
     ${expensesCard(s)}
     ${fixedCard(key)}
@@ -411,21 +434,36 @@ function homeView() {
   `;
 }
 
-function breakdownCard(s) {
+// Spending per category: your own expenses plus your half of your partner's, through the category mapping.
+// Partner categories that aren't mapped yet get their own row, which you tap to map.
+function breakdownCard(key, s) {
   const totals = new Map(activeCats('flex').map((c) => [c.id, 0]));
   s.exps.forEach((e) => totals.set(e.catId, (totals.get(e.catId) || 0) + counted(e)));
-  const rows = [...totals].sort((a, b) => b[1] - a[1]);
+  const unmapped = new Map();
+  for (const [, amount, emoji, name] of partnerItems(key)) {
+    const id = mappedCat(name);
+    if (id) totals.set(id, (totals.get(id) || 0) + otherHalf(amount));
+    else {
+      const u = unmapped.get(catKey(name)) || { name, emoji, total: 0 };
+      u.total += otherHalf(amount);
+      unmapped.set(catKey(name), u);
+    }
+  }
+  const rows = [...[...totals].map(([id, total]) => ({ c: cat(id), total })),
+    ...[...unmapped.values()].map((u) => ({ u, total: u.total }))].sort((a, b) => b.total - a.total);
   if (!rows.length) return '';
-  const max = Math.max(1, ...rows.map((r) => r[1]));
+  const max = Math.max(1, ...rows.map((r) => r.total));
+  const partner = esc(partnerLabel(key));
   return `
     <section class="card">
-      <h2>By category</h2>
-      ${rows.map(([id, total]) => {
-        const c = cat(id);
+      <h2>By category${s.partner ? ` <small>yours + your half of ${partner}'s</small>` : ''}</h2>
+      ${rows.map(({ c, u, total }) => {
         const pct = s.spent ? Math.round((total / s.spent) * 100) : 0;
+        const label = c ? `<span class="bar-emoji">${c.emoji}</span>${esc(c.name)}`
+          : `<span class="bar-emoji">${esc(u.emoji)}</span>${esc(u.name)} <span class="unmapped">${partner}'s · tap to match</span>`;
         return `
-          <div class="bar-row ${total ? '' : 'zero'}">
-            <div class="bar-head"><span><span class="bar-emoji">${c.emoji}</span>${esc(c.name)}</span><span>${fmt(total)} <small>${pct}%</small></span></div>
+          <div class="bar-row ${total ? '' : 'zero'} ${u ? 'tappable' : ''}" ${u ? `data-action="map-cat" data-name="${esc(u.name)}" role="button" tabindex="0"` : ''}>
+            <div class="bar-head"><span>${label}</span><span>${fmt(total)} <small>${pct}%</small></span></div>
             <div class="bar"><span style="width:${(total / max) * 100}%"></span></div>
           </div>`;
       }).join('')}
@@ -436,7 +474,12 @@ function expensesCard(s) {
   if (!s.exps.length) {
     return `<section class="card"><h2>Expenses</h2><p class="empty">No expenses yet. Tap <b>Add expense</b> to log one.</p></section>`;
   }
-  const sorted = [...s.exps].sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
+  return `<section class="card"><h2>Expenses <small>${s.exps.length}</small></h2>${expenseRows(s.exps)}</section>`;
+}
+
+// Your expenses as rows under day headings, newest first. Tap one to edit it.
+function expenseRows(exps) {
+  const sorted = [...exps].sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
   let html = '';
   let lastDate = '';
   for (const e of sorted) {
@@ -455,7 +498,7 @@ function expensesCard(s) {
         <span class="row-amt">${fmt(counted(e))}${e.split ? `<span class="row-sub">½ of ${fmt(e.amount)}</span>` : ''}</span>
       </button>`;
   }
-  return `<section class="card"><h2>Expenses <small>${s.exps.length}</small></h2>${html}</section>`;
+  return html;
 }
 
 function fixedCard(key) {
@@ -506,6 +549,113 @@ function historyView() {
     </button>
     ${settleLogCard()}
     <section class="card">${rows.join('')}</section>`;
+}
+
+// A month opened from History: spent and left over, spending by category (yours plus your half of your
+// partner's), your own charges, then the split charges from both of you.
+function monthView() {
+  const key = ui.month;
+  const s = stats(key);
+  const isCurrent = key === monthKey();
+  const left = s.remaining - (isCurrent ? savingsTargets() : s.saved); // matches the Home number
+  const rec = db.settlements[key];
+  const partner = esc(partnerLabel(key));
+  const own = s.exps.filter((e) => !e.split);
+  const mineSplit = s.exps.filter((e) => e.split);
+  const theirs = [...partnerItems(key)].sort((a, b) => b[0] - a[0]);
+  const status = rec
+    ? `Settled ${dayLabel(rec.date).replace(/^(Today|Yesterday)$/, (d) => d.toLowerCase())}: ${settledText(rec)}.`
+    : theirs.length || mineSplit.length ? 'Not settled yet.' : '';
+  return `
+    <header class="month-nav">
+      <button class="icon-btn" data-action="go" data-view="history" aria-label="Back to History">‹</button>
+      <h1>${monthLabel(key)}</h1>
+      <span class="icon-btn spacer" aria-hidden="true"></span>
+    </header>
+    <div class="cols"><div class="col">
+    <section class="card stats">
+      ${stat('Spent', fmtShort(s.spent))}
+      ${stat(left < 0 ? 'Over' : isCurrent ? 'Left to spend' : 'Left over', fmtShort(Math.abs(left)))}
+    </section>
+    ${status ? `<p class="settle-done">${status}</p>` : ''}
+    ${breakdownCard(key, s)}
+    </div><div class="col">
+    <section class="card">
+      <h2>Charges <small>${own.length}</small></h2>
+      ${own.length ? expenseRows(own) : '<p class="empty">No charges.</p>'}
+    </section>
+    ${mineSplit.length || theirs.length ? `
+      <section class="card settle-list">
+        <h2>Split charges <small>your half counts</small></h2>
+        <h3>You paid <small>${mineSplit.length}</small></h3>
+        ${mineSplit.length ? expenseRows(mineSplit) : '<p class="empty">No split charges.</p>'}
+        <h3>${partner} paid <small>${theirs.length}</small></h3>
+        ${theirs.length ? theirs.map((i) => partnerRow(i, key)).join('') : '<p class="empty">No split charges.</p>'}
+      </section>` : ''}
+    ${fixedCard(key)}
+    </div></div>`;
+}
+
+const itemDate = (key, day) => {
+  const [y, m] = key.split('-').map(Number);
+  return new Date(y, m - 1, day).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+// One of your partner's split charges: your half, and which of your categories it counts toward.
+function partnerRow([day, amount, emoji, name, note], key) {
+  const id = mappedCat(name);
+  const c = id && cat(id);
+  return `
+    <button class="row" data-action="map-cat" data-name="${esc(name)}">
+      <span class="emoji">${esc(emoji)}</span>
+      <span class="row-main">
+        <span class="row-title">${esc(name)}</span>
+        <span class="row-sub">${[itemDate(key, day), note].filter(Boolean).map(esc).join(' · ')}</span>
+        <span class="row-sub ${c ? '' : 'unmapped'}">${c ? `Counts as ${c.emoji} ${esc(c.name)}` : 'Not matched yet · tap to match'}</span>
+      </span>
+      <span class="row-amt">${fmt(otherHalf(amount))}<span class="row-sub">½ of ${fmt(amount)}</span></span>
+    </button>`;
+}
+
+// A dropdown per partner category for picking which of your categories it counts toward.
+function mapRows(cats) {
+  const flex = activeCats('flex');
+  return cats.map(({ name, emoji }) => {
+    const id = mappedCat(name);
+    return `
+      <label class="map-row">
+        <span class="emoji">${esc(emoji)}</span>
+        <span class="row-main"><span class="row-title">${esc(name)}</span></span>
+        <span class="map-arrow">→</span>
+        <select data-map="${esc(name)}" class="${id ? '' : 'need'}" aria-label="Your category for ${esc(name)}">
+          ${id ? '' : '<option value="" selected disabled>Choose…</option>'}
+          ${flex.map((c) => `<option value="${c.id}" ${c.id === id ? 'selected' : ''}>${c.emoji} ${esc(c.name)}</option>`).join('')}
+        </select>
+      </label>`;
+  }).join('');
+}
+
+// The partner categories in a list of split charges, once each.
+const catsIn = (items) => [...new Map(items.map(([, , emoji, name]) => [catKey(name), { name, emoji }])).values()];
+
+function mapSheet(name) {
+  const c = partnerCats().find((p) => catKey(p.name) === catKey(name)) || { name, emoji: '🏷️' };
+  openSheet(`
+    <h2>Match “${esc(c.name)}”</h2>
+    <p class="hint" style="margin-top:0">Pick which of your categories this counts toward. It applies to every month, and you can change it any time in <b>Settings → Partner's categories</b>.</p>
+    ${mapRows([c])}
+    <button class="text-btn" data-action="close">Close</button>`);
+}
+
+function partnerCatsCard() {
+  const cats = partnerCats();
+  if (!cats.length) return '';
+  return `
+    <section class="card">
+      <h2>Partner's categories</h2>
+      <p class="hint" style="margin:0 0 4px">Which of your categories each of your partner's split charges counts toward. Names that match one of yours are matched automatically. To give one its own category, add it under Flexible categories, then pick it here.</p>
+      ${mapRows(cats)}
+    </section>`;
 }
 
 // Every saved settle-up, newest first. Tap one to see the breakdown from that day.
@@ -670,6 +820,7 @@ function settingsView() {
       </div>
     </section>
     ${syncCard()}
+    ${partnerCatsCard()}
     ${NATIVE ? widgetCard() : ''}
     ${backupCard()}
     <section class="card">
@@ -1430,13 +1581,14 @@ const cleanItems = (items) => (Array.isArray(items) ? items : [])
 const PUBLIC_URL = 'https://yuqian-cao-19.github.io/budgeting-app/';
 const settleLink = (code) => `${NATIVE ? PUBLIC_URL : location.origin + location.pathname}#settle=${code}`;
 
-function settleRow([day, amount, emoji, name, note], key) {
-  const [y, m] = key.split('-').map(Number);
-  const date = new Date(y, m - 1, day).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+// theirs: the row is your partner's, so also show which of your categories it counts toward.
+function settleRow([day, amount, emoji, name, note], key, theirs = false) {
+  const c = theirs && mappedCat(name) && cat(mappedCat(name));
   return `
     <div class="row">
       <span class="emoji">${esc(emoji)}</span>
-      <span class="row-main"><span class="row-title">${esc(name)}</span><span class="row-sub">${[date, note].filter(Boolean).map(esc).join(' · ')}</span></span>
+      <span class="row-main"><span class="row-title">${esc(name)}</span><span class="row-sub">${[itemDate(key, day), note].filter(Boolean).map(esc).join(' · ')}</span>
+        ${theirs ? `<span class="row-sub ${c ? '' : 'unmapped'}">${c ? `Counts as ${c.emoji} ${esc(c.name)}` : 'Not matched yet'}</span>` : ''}</span>
       <span class="row-amt">${fmt(amount)}<span class="row-sub">half ${fmt(otherHalf(amount))}</span></span>
     </div>`;
 }
@@ -1469,7 +1621,7 @@ function settleBreakdown(partner, key, mine, theirs, settled = false) {
         <h3>You paid <small>${mine.length}</small></h3>
         ${mine.map((i) => settleRow(i, key)).join('') || '<p class="empty">No split expenses.</p>'}
         <h3>${name} paid <small>${theirs.length}</small></h3>
-        ${theirs.map((i) => settleRow(i, key)).join('') || '<p class="empty">No split expenses.</p>'}
+        ${theirs.map((i) => settleRow(i, key, true)).join('') || '<p class="empty">No split expenses.</p>'}
       </section>`,
   };
 }
@@ -1541,12 +1693,22 @@ function renderSettle() {
   if (settle.view === 'result' && settle.partner) {
     const p = settle.partner;
     const b = settleBreakdown(p.name, key, mine, p.items);
+    // Their categories have to be matched to yours first, so the month's breakdown is complete.
+    const cats = catsIn(p.items);
+    const unmatched = cats.filter((c) => !mappedCat(c.name)).length;
     openSheet(`
       <h2>Settle up · ${monthLabel(key)}</h2>
       ${doneNote}
       ${b.summary}
-      <button class="primary" data-action="settle-mark">
-        ${done ? 'Update' : 'Mark'} ${monthLabel(key).split(' ')[0]} as settled
+      ${cats.length ? `
+        <section class="settle-map">
+          <h3>Match ${esc(p.name)}'s categories to yours</h3>
+          <p class="hint" style="margin-top:0">Your half of each charge counts toward the category you pick. The app remembers it for next time.</p>
+          ${mapRows(cats)}
+        </section>` : ''}
+      <button class="primary" data-action="settle-mark" ${unmatched ? 'disabled' : ''}>
+        ${unmatched ? `Match ${unmatched} more categor${unmatched === 1 ? 'y' : 'ies'} to settle`
+          : `${done ? 'Update' : 'Mark'} ${monthLabel(key).split(' ')[0]} as settled`}
       </button>
       ${b.lists}
       <button class="text-btn" data-action="settle-back">Back</button>`);
@@ -2047,9 +2209,10 @@ const actions = {
     ui.month = addMonths(ui.month, Number(el.dataset.delta));
     render();
   },
+  'map-cat': (el) => mapSheet(el.dataset.name),
   'open-month'(el) {
     ui.month = el.dataset.month;
-    ui.view = 'home';
+    ui.view = 'month';
     render();
     window.scrollTo(0, 0);
   },
@@ -2326,6 +2489,16 @@ document.addEventListener('input', onFieldChange);
 document.addEventListener('change', (ev) => {
   onFieldChange(ev);
   if (ev.target.dataset.imp) onImportField(ev.target);
+  if (ev.target.dataset.map != null) {
+    const c = cat(ev.target.value);
+    db.catMap[catKey(ev.target.dataset.map)] = c.id;
+    save();
+    render();
+    if (ev.target.closest('.settle-map')) renderSettle(); // unlocks Mark as settled once all are matched
+    else if (ev.target.closest('#sheet-body')) closeSheet();
+    else ev.target.classList.remove('need');
+    toast(`${ev.target.dataset.map} counts as ${c.name}`);
+  }
   if (ev.target.id === 'auto-backup') {
     setBackupMeta({ auto: ev.target.checked });
     // Back up right away. Doing it during this tap also gets Chrome's permission for the later automatic ones.
