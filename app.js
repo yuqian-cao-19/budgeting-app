@@ -562,7 +562,8 @@ function monthView() {
   const partner = esc(partnerLabel(key));
   const own = s.exps.filter((e) => !e.split);
   const mineSplit = s.exps.filter((e) => e.split);
-  const theirs = [...partnerItems(key)].sort((a, b) => b[0] - a[0]);
+  // Newest first, keeping each charge's place in the list so a tap can find it.
+  const theirs = partnerItems(key).map((item, i) => ({ item, i })).sort((a, b) => b.item[0] - a.item[0]);
   const status = rec
     ? `Settled ${dayLabel(rec.date).replace(/^(Today|Yesterday)$/, (d) => d.toLowerCase())}: ${settledText(rec)}.`
     : theirs.length || mineSplit.length ? 'Not settled yet.' : '';
@@ -590,7 +591,7 @@ function monthView() {
         <h3>You paid <small>${mineSplit.length}</small></h3>
         ${mineSplit.length ? expenseRows(mineSplit) : '<p class="empty">No split charges.</p>'}
         <h3>${partner} paid <small>${theirs.length}</small></h3>
-        ${theirs.length ? theirs.map((i) => partnerRow(i, key)).join('') : '<p class="empty">No split charges.</p>'}
+        ${theirs.length ? theirs.map(({ item, i }) => partnerRow(item, key, i)).join('') : '<p class="empty">No split charges.</p>'}
       </section>` : ''}
     ${fixedCard(key)}
     </div></div>`;
@@ -602,19 +603,42 @@ const itemDate = (key, day) => {
 };
 
 // One of your partner's split charges: your half, and which of your categories it counts toward.
-function partnerRow([day, amount, emoji, name, note], key) {
-  const id = mappedCat(name);
-  const c = id && cat(id);
+// Tap it to see the whole thing, since long notes get cut off here.
+function partnerRow([day, amount, emoji, name, note], key, index) {
+  const c = mappedCat(name) && cat(mappedCat(name));
   return `
-    <button class="row" data-action="map-cat" data-name="${esc(name)}">
+    <button class="row" data-action="partner-charge" data-month="${key}" data-i="${index}">
       <span class="emoji">${esc(emoji)}</span>
       <span class="row-main">
         <span class="row-title">${esc(name)}</span>
         <span class="row-sub">${[itemDate(key, day), note].filter(Boolean).map(esc).join(' · ')}</span>
-        <span class="row-sub ${c ? '' : 'unmapped'}">${c ? `Counts as ${c.emoji} ${esc(c.name)}` : 'Not matched yet · tap to match'}</span>
+        <span class="row-sub ${c ? '' : 'unmapped'}">${c ? `Counts as ${c.emoji} ${esc(c.name)}` : 'Not matched yet'}</span>
       </span>
       <span class="row-amt">${fmt(otherHalf(amount))}<span class="row-sub">½ of ${fmt(amount)}</span></span>
     </button>`;
+}
+
+// The full details of one of your partner's split charges.
+function partnerChargeSheet(key, index) {
+  const item = partnerItems(key)[index];
+  if (!item) return;
+  const [day, amount, emoji, name, note] = item;
+  const [y, m] = key.split('-').map(Number);
+  const date = new Date(y, m - 1, day).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  const c = mappedCat(name) && cat(mappedCat(name));
+  const row = (label, value) => `<div class="sync-row"><span>${label}</span><b>${value}</b></div>`;
+  openSheet(`
+    <h2>${esc(emoji)} ${esc(name)}</h2>
+    ${note ? `<p class="charge-note">${esc(note)}</p>` : ''}
+    <div class="sync-box">
+      ${row('Paid by', esc(partnerLabel(key)))}
+      ${row('Date', date)}
+      ${row('Amount', fmt(amount))}
+      ${row('Your half', fmt(otherHalf(amount)))}
+      ${row('Counts as', c ? `${c.emoji} ${esc(c.name)}` : '<span class="unmapped">Not matched yet</span>')}
+    </div>
+    <p class="hint">${esc(partnerLabel(key))} logged this, so it can only be edited on their phone. Change which category it counts as in <b>Settings → Partner's categories</b>.</p>
+    <button class="text-btn" data-action="close">Close</button>`);
 }
 
 // A dropdown per partner category for picking which of your categories it counts toward.
@@ -2210,6 +2234,7 @@ const actions = {
     render();
   },
   'map-cat': (el) => mapSheet(el.dataset.name),
+  'partner-charge': (el) => partnerChargeSheet(el.dataset.month, Number(el.dataset.i)),
   'open-month'(el) {
     ui.month = el.dataset.month;
     ui.view = 'month';
