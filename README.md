@@ -60,7 +60,14 @@ Fund balances are kept indefinitely. Only their month-by-month history is trimme
 
 ## Settle up with your partner
 
-If you both use the app, it can work out who owes whom at the end of the month. Every expense marked **Split** counts as shared with your partner, and only the person who paid logs it.
+If you both use the app, it can work out who owes whom at the end of the month. Only the person who paid logs a shared expense. When adding one, pick **Who's it for?**:
+
+- **Me** (the default): all yours.
+- **Split 50/50:** half counts for you, and your partner owes the other half.
+- **Custom:** enter your share, and your partner owes the rest. Use it for uneven splits.
+- **All Will:** counts $0 for you, and Will owes all of it. Use it when you buy something for them.
+
+Always enter the full amount you paid, so it matches your bank statement. Your partner's phone counts what they owe as their spending. Both phones need the latest version for uneven splits; if your partner's is older, the settle screen tells you to update it first, because an older version reads every shared charge as 50/50.
 
 1. Both of you open **History → Settle up** and pick the month.
 2. One phone taps **Show my code**. The other taps **Scan partner's code** and points the camera at it. Then swap, so both phones see the result.

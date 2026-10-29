@@ -107,6 +107,14 @@ main {
 .tap-stat { cursor: pointer; }
 .stat-extra { font-style: normal; font-weight: 700; color: var(--accent); }
 .budget-total { margin-top: 12px; }
+.who-chips { flex-wrap: nowrap; gap: 6px; }
+.who-chips .chip { flex: 1 1 auto; padding: 10px 8px; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.share-field { display: none; align-items: center; gap: 12px; margin-top: 10px; }
+.share-field.on { display: flex; }
+.share-field > span { color: var(--muted); font-size: 14px; white-space: nowrap; }
+.share-field .money-field { flex: 1; }
+.who-hint { margin: 8px 0 4px; }
+.settle-warn { margin: 0 0 12px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--warn); font-size: 14px; line-height: 1.45; }
 .cat-summary { display: flex; flex-direction: column; gap: 2px; margin: -6px 0 6px; color: var(--muted); font-size: 14px; }
 .cat-summary b { color: var(--text); font-size: 28px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .budget-total b { font-weight: 750; }

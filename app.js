@@ -138,7 +138,15 @@ let db = load();
 const UNKNOWN_CAT = { name: 'Unknown', emoji: '❔', type: 'flex' };
 const cat = (id) => db.categories.find((c) => c.id === id) || UNKNOWN_CAT;
 const activeCats = (type) => db.categories.filter((c) => c.type === type && !c.deleted);
-const counted = (e) => (e.split ? Math.round(e.amount / 2) : e.amount);
+// What counts toward your spending: all of it, half if split 50/50, or your share if you set one
+// (0 when it was all for your partner). Your partner owes the rest.
+const counted = (e) => (!e.split ? e.amount : e.share ?? Math.round(e.amount / 2));
+// Under an expense's amount in lists: how much of it was yours.
+function shareText(e) {
+  if (!e.split) return '';
+  if (e.share == null) return `½ of ${fmt(e.amount)}`;
+  return e.share === 0 ? `all ${esc(partnerShort())} · ${fmt(e.amount)}` : `of ${fmt(e.amount)}`;
+}
 const expensesIn = (key) => db.expenses.filter((e) => e.date.startsWith(key));
 
 function newMonth() {
@@ -175,7 +183,7 @@ const partnerItems = (key) => syncConf().partners?.[key]?.items || db.settlement
 const partnerLabel = (key) =>
   syncConf().partners?.[key]?.name || db.settlements[key]?.partner || syncConf().partnerName || 'Your partner';
 // Your half of them.
-const partnerShare = (key) => partnerItems(key).reduce((sum, [, a]) => sum + otherHalf(a), 0);
+const partnerShare = (key) => partnerItems(key).reduce((sum, item) => sum + owedOf(item), 0);
 
 // Which of your categories each of your partner's categories counts toward. Their uploads carry only the
 // category name, so the mapping is keyed by it. A name that matches one of yours maps on its own.
@@ -488,12 +496,13 @@ function breakdownCard(key, s) {
   const totals = new Map(activeCats('flex').map((c) => [c.id, 0]));
   s.exps.forEach((e) => totals.set(e.catId, (totals.get(e.catId) || 0) + counted(e)));
   const unmapped = new Map();
-  for (const [, amount, emoji, name] of partnerItems(key)) {
+  for (const item of partnerItems(key)) {
+    const [, , emoji, name] = item;
     const id = mappedCat(name);
-    if (id) totals.set(id, (totals.get(id) || 0) + otherHalf(amount));
+    if (id) totals.set(id, (totals.get(id) || 0) + owedOf(item));
     else {
       const u = unmapped.get(catKey(name)) || { name, emoji, total: 0 };
-      u.total += otherHalf(amount);
+      u.total += owedOf(item);
       unmapped.set(catKey(name), u);
     }
   }
@@ -544,7 +553,7 @@ function expenseRows(exps) {
           <span class="row-title">${esc(c.name)}</span>
           ${e.note ? `<span class="row-sub">${esc(e.note)}</span>` : ''}
         </span>
-        <span class="row-amt">${fmt(counted(e))}${e.split ? `<span class="row-sub">½ of ${fmt(e.amount)}</span>` : ''}</span>
+        <span class="row-amt">${fmt(counted(e))}${e.split ? `<span class="row-sub">${shareText(e)}</span>` : ''}</span>
       </button>`;
   }
   return html;
@@ -554,7 +563,7 @@ function expenseRows(exps) {
 function categoryCharges(key, id) {
   const own = expensesIn(key).filter((e) => e.catId === id);
   const theirs = partnerItems(key).map((item, i) => ({ item, i })).filter(({ item }) => mappedCat(item[3]) === id);
-  const total = own.reduce((sum, e) => sum + counted(e), 0) + theirs.reduce((sum, { item }) => sum + otherHalf(item[1]), 0);
+  const total = own.reduce((sum, e) => sum + counted(e), 0) + theirs.reduce((sum, { item }) => sum + owedOf(item), 0);
   return { own, theirs, total };
 }
 
@@ -574,14 +583,17 @@ function categorySheet(key, id) {
       <button class="row" data-action="cat-expense" data-id="${e.id}" ${back}>
         <span class="emoji">${c.emoji}</span>
         <span class="row-main"><span class="row-title">${esc(e.note || c.name)}</span>${e.split ? '<span class="row-sub">Split</span>' : ''}</span>
-        <span class="row-amt">${fmt(counted(e))}${e.split ? `<span class="row-sub">½ of ${fmt(e.amount)}</span>` : ''}</span>
+        <span class="row-amt">${fmt(counted(e))}${e.split ? `<span class="row-sub">${shareText(e)}</span>` : ''}</span>
       </button>` })),
-    ...theirs.map(({ item: [day, amount, emoji, name, note], i }) => ({ date: `${key}-${pad(day)}`, order: 0, html: `
+    ...theirs.map(({ item, i }) => {
+      const [day, , emoji, name, note] = item;
+      return { date: `${key}-${pad(day)}`, order: 0, html: `
       <button class="row" data-action="partner-charge" data-month="${key}" data-i="${i}" ${back}>
         <span class="emoji">${esc(emoji)}</span>
         <span class="row-main"><span class="row-title">${esc(note || name)}</span><span class="row-sub">${partner} paid${catKey(name) === catKey(c.name) ? '' : ` · ${esc(name)}`}</span></span>
-        <span class="row-amt">${fmt(otherHalf(amount))}<span class="row-sub">½ of ${fmt(amount)}</span></span>
-      </button>` })),
+        <span class="row-amt">${fmt(owedOf(item))}<span class="row-sub">${owedText(item)}</span></span>
+      </button>` };
+    }),
   ].sort((a, b) => b.date.localeCompare(a.date) || b.order - a.order);
   let list = '';
   let lastDate = '';
@@ -713,9 +725,10 @@ const itemDate = (key, day) => {
   return new Date(y, m - 1, day).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
-// One of your partner's split charges: your half, and which of your categories it counts toward.
+// One of your partner's split charges: your share, and which of your categories it counts toward.
 // Tap it to see the whole thing, since long notes get cut off here.
-function partnerRow([day, amount, emoji, name, note], key, index) {
+function partnerRow(item, key, index) {
+  const [day, , emoji, name, note] = item;
   const c = mappedCat(name) && cat(mappedCat(name));
   return `
     <button class="row" data-action="partner-charge" data-month="${key}" data-i="${index}">
@@ -725,7 +738,7 @@ function partnerRow([day, amount, emoji, name, note], key, index) {
         <span class="row-sub">${[itemDate(key, day), note].filter(Boolean).map(esc).join(' · ')}</span>
         <span class="row-sub ${c ? '' : 'unmapped'}">${c ? `Counts as ${c.emoji} ${esc(c.name)}` : 'Not matched yet'}</span>
       </span>
-      <span class="row-amt">${fmt(otherHalf(amount))}<span class="row-sub">½ of ${fmt(amount)}</span></span>
+      <span class="row-amt">${fmt(owedOf(item))}<span class="row-sub">${owedText(item)}</span></span>
     </button>`;
 }
 
@@ -745,7 +758,7 @@ function partnerChargeSheet(key, index, backId) {
       ${row('Paid by', esc(partnerLabel(key)))}
       ${row('Date', date)}
       ${row('Amount', fmt(amount))}
-      ${row('Your half', fmt(otherHalf(amount)))}
+      ${row(isHalf(item) ? 'Your half' : 'Your share', fmt(owedOf(item)))}
       ${row('Counts as', c ? `${c.emoji} ${esc(c.name)}` : '<span class="unmapped">Not matched yet</span>')}
     </div>
     <p class="hint">${esc(partnerLabel(key))} logged this, so it can only be edited on their phone. Change which category it counts as in <b>Settings → Partner's categories</b>.</p>
@@ -1084,14 +1097,19 @@ function expenseSheet(e) {
   openSheet(`
     <h2>${e ? 'Edit expense' : 'Add expense'}</h2>
     <div class="money-field big"><span>$</span><input id="exp-amt" inputmode="decimal" placeholder="0.00" value="${e ? toInput(e.amount) : ''}" autocomplete="off"></div>
-    <div class="chips">
+    <div class="chips cat-chips">
       ${cats.map((c) => `<button type="button" class="chip ${e && c.id === e.catId ? 'on' : ''}" data-action="pick-cat" data-id="${c.id}">${c.emoji} ${esc(c.name)}</button>`).join('')}
     </div>
-    <label class="switch-row">
-      <span><b>Split 50/50</b><span class="hint" id="split-hint">Only your half counts</span></span>
-      <input type="checkbox" id="exp-split" ${e && e.split ? 'checked' : ''}>
-      <span class="switch"></span>
-    </label>
+    <label class="lbl">Who's it for?</label>
+    <div class="chips who-chips">
+      ${[['me', 'Me'], ['half', 'Split 50/50'], ['custom', 'Custom'], ['all', `All ${esc(partnerShort())}`]].map(([w, label]) =>
+        `<button type="button" class="chip ${w === whoOf(e) ? 'on' : ''}" data-action="pick-who" data-who="${w}">${label}</button>`).join('')}
+    </div>
+    <div class="share-field" id="share-field">
+      <span>My share</span>
+      <div class="money-field"><span>$</span><input id="exp-share" inputmode="decimal" placeholder="0.00" value="${e && whoOf(e) === 'custom' ? toInput(Math.abs(e.share)) : ''}" autocomplete="off"></div>
+    </div>
+    <p class="hint who-hint" id="who-hint"></p>
     <input id="exp-note" class="text" placeholder="Note (optional)" maxlength="80" value="${e ? esc(e.note || '') : ''}">
     <input id="exp-date" class="text" type="date" value="${e ? e.date : defaultExpenseDate()}" min="${db.startMonth}-01" max="${todayISO()}">
     <button class="primary" id="exp-save" data-action="save-expense" data-id="${e ? e.id : ''}" disabled>${e ? 'Save' : 'Add'}</button>
@@ -1100,18 +1118,40 @@ function expenseSheet(e) {
   updateExpenseForm();
 }
 
+// Which "Who's it for?" option an expense uses. New expenses are just yours.
+const whoOf = (e) => (!e?.split ? 'me' : e.share == null ? 'half' : e.share === 0 ? 'all' : 'custom');
+// Your partner's first name for labels, or "partner" if the app doesn't know it yet.
+const partnerShort = () => {
+  const latest = Object.keys(db.settlements).sort().pop(); // this month may have no upload yet
+  const name = partnerLabel(ui.month) !== 'Your partner' ? partnerLabel(ui.month) : db.settlements[latest]?.partner;
+  return !name || name === 'Your partner' ? 'partner' : name;
+};
+
+// The amount and share from the expense form: { amount, split, share } (share only when it isn't 50/50).
+function expenseForm() {
+  const amount = parseAmount(document.getElementById('exp-amt').value);
+  const who = $sheetBody.querySelector('.who-chips .chip.on')?.dataset.who || 'me';
+  const share = who === 'all' ? 0 : who === 'custom' ? parseAmount(document.getElementById('exp-share').value) : null;
+  return { amount, who, split: who !== 'me', share };
+}
+
 function updateExpenseForm() {
   const btn = document.getElementById('exp-save');
   if (!btn) return;
-  const amount = parseAmount(document.getElementById('exp-amt').value);
-  const split = document.getElementById('exp-split').checked;
-  const picked = $sheetBody.querySelector('.chip.on');
+  const { amount, who, split, share } = expenseForm();
+  const picked = $sheetBody.querySelector('.cat-chips .chip.on');
   const verb = btn.dataset.id ? 'Save' : 'Add';
-  const track = split ? Math.round(amount / 2) : amount;
-  btn.disabled = !amount || !picked;
+  const track = counted({ amount, split, share: share ?? undefined });
+  const tooBig = who === 'custom' && share > amount;
+  btn.disabled = !amount || !picked || tooBig || (who === 'custom' && !share);
   btn.textContent = amount ? `${verb} ${fmt(track)}` : verb;
-  document.getElementById('split-hint').textContent =
-    split && amount ? `You'll track ${fmt(track)} of ${fmt(amount)}` : 'Only your half counts';
+  document.getElementById('share-field').classList.toggle('on', who === 'custom');
+  const hint = document.getElementById('who-hint');
+  hint.classList.toggle('neg-text', tooBig);
+  hint.textContent = tooBig ? 'Your share is more than the whole charge'
+    : !amount ? ({ me: 'Counts fully toward your spending', half: 'Only your half counts', custom: 'Enter your share; your partner owes the rest', all: "Doesn't count for you; your partner owes all of it" })[who]
+      : who === 'me' ? `All yours: you count ${fmt(amount)}`
+        : `You count ${fmt(track)} · ${partnerShort() === 'partner' ? 'Your partner' : partnerShort()} owes you ${fmt(amount - track)}`;
 }
 
 function catSheet(c, type) {
@@ -1653,14 +1693,23 @@ const SETTLE_QR_EASY = 900; // above this the code gets dense enough that phone 
 const settle = { month: null, view: 'home', partner: null };
 let scanStream = null;
 
-// Your share of a split expense is counted() (half, rounded); the other person owes the rest.
+// Your share of a split expense is counted() (half, rounded, unless you set it); the other person owes the rest.
 const otherHalf = (amount) => amount - Math.round(amount / 2);
 
-// A month's split expenses as compact rows: [day, full amount, emoji, category, note].
+// A month's split expenses as compact rows: [day, full amount, emoji, category, note, what the other person owes].
 const splitItems = (key) => expensesIn(key)
   .filter((e) => e.split)
   .sort((a, b) => a.date.localeCompare(b.date))
-  .map((e) => [Number(e.date.slice(8)), e.amount, cat(e.catId).emoji, cat(e.catId).name, e.note || '']);
+  .map((e) => [Number(e.date.slice(8)), e.amount, cat(e.catId).emoji, cat(e.catId).name, e.note || '', e.amount - counted(e)]);
+
+// What the other person owes for a shared charge. Older versions of the app didn't send it, which meant 50/50.
+const owedOf = (item) => item[5] ?? otherHalf(item[1]);
+const isHalf = (item) => owedOf(item) === otherHalf(item[1]);
+// Under someone's share of a charge in lists.
+const owedText = (item) => (isHalf(item) ? `½ of ${fmt(item[1])}` : owedOf(item) === item[1] ? `all of ${fmt(item[1])}` : `of ${fmt(item[1])}`);
+const owedSum = (items) => items.reduce((sum, item) => sum + owedOf(item), 0);
+// av: the app's data version. 2 = shared charges carry what's owed, so uneven splits work.
+const APP_DATA_VERSION = 2;
 
 // Early in a month you're usually settling the one that just ended.
 function defaultSettleMonth() {
@@ -1693,7 +1742,7 @@ const fromB64url = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g
 const pipeBytes = async (bytes, stream) => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
 
 async function encodeSettle() {
-  const json = JSON.stringify({ v: 1, id: db.deviceId, name: db.myName, m: settle.month, items: splitItems(settle.month) });
+  const json = JSON.stringify({ v: 1, av: APP_DATA_VERSION, id: db.deviceId, name: db.myName, m: settle.month, items: splitItems(settle.month) });
   const bytes = new TextEncoder().encode(json);
   if (!window.CompressionStream) return `B0.${toB64url(bytes)}`;
   return `B1.${toB64url(await pipeBytes(bytes, new CompressionStream('deflate-raw')))}`;
@@ -1708,29 +1757,35 @@ async function decodeSettle(text) {
   if (m[1] === '1') bytes = await pipeBytes(bytes, new DecompressionStream('deflate-raw'));
   const p = JSON.parse(new TextDecoder().decode(bytes));
   if (p?.v !== 1 || !/^\d{4}-\d{2}$/.test(p.m) || !Array.isArray(p.items)) return null;
-  return { id: String(p.id || ''), name: cleanName(p.name), month: p.m, items: cleanItems(p.items) };
+  return { id: String(p.id || ''), name: cleanName(p.name), month: p.m, items: cleanItems(p.items), av: Number(p.av) || 1 };
 }
 
 // Split-expense lists and names from the other phone (a code or a synced file) are checked and trimmed.
 const cleanName = (name) => String(name || 'Your partner').trim().slice(0, 30) || 'Your partner';
 const cleanItems = (items) => (Array.isArray(items) ? items : [])
   .filter((i) => Array.isArray(i) && Number.isFinite(i[0]) && Number.isFinite(i[1]))
-  .map(([day, amount, emoji, name, note]) => [Math.trunc(day), Math.round(amount),
-    String(emoji || '🏷️').slice(0, 8), String(name || '').slice(0, 30), String(note || '').slice(0, 80)]);
+  .map(([day, amount, emoji, name, note, owed]) => {
+    const row = [Math.trunc(day), Math.round(amount),
+      String(emoji || '🏷️').slice(0, 8), String(name || '').slice(0, 30), String(note || '').slice(0, 80)];
+    // What's owed can't be more than the charge (or the other way round for a refund).
+    if (Number.isFinite(owed)) row.push(Math.max(Math.min(0, row[1]), Math.min(Math.max(0, row[1]), Math.round(owed))));
+    return row;
+  });
 
 // Inside the Android app the page lives at localhost, so links point at the public web app instead.
 const PUBLIC_URL = 'https://yuqian-cao-19.github.io/budgeting-app/';
 const settleLink = (code) => `${NATIVE ? PUBLIC_URL : location.origin + location.pathname}#settle=${code}`;
 
 // theirs: the row is your partner's, so also show which of your categories it counts toward.
-function settleRow([day, amount, emoji, name, note], key, theirs = false) {
+function settleRow(item, key, theirs = false) {
+  const [day, amount, emoji, name, note] = item;
   const c = theirs && mappedCat(name) && cat(mappedCat(name));
   return `
     <div class="row">
       <span class="emoji">${esc(emoji)}</span>
       <span class="row-main"><span class="row-title">${esc(name)}</span><span class="row-sub">${[itemDate(key, day), note].filter(Boolean).map(esc).join(' · ')}</span>
         ${theirs ? `<span class="row-sub ${c ? '' : 'unmapped'}">${c ? `Counts as ${c.emoji} ${esc(c.name)}` : 'Not matched yet'}</span>` : ''}</span>
-      <span class="row-amt">${fmt(amount)}<span class="row-sub">half ${fmt(otherHalf(amount))}</span></span>
+      <span class="row-amt">${fmt(amount)}<span class="row-sub">${isHalf(item) ? 'half' : 'owed'} ${fmt(owedOf(item))}</span></span>
     </div>`;
 }
 
@@ -1739,8 +1794,8 @@ function settleRow([day, amount, emoji, name, note], key, theirs = false) {
 function settleBreakdown(partner, key, mine, theirs, settled = false) {
   const mineTotal = mine.reduce((sum, [, a]) => sum + a, 0);
   const theirTotal = theirs.reduce((sum, [, a]) => sum + a, 0);
-  const owedToMe = mine.reduce((sum, [, a]) => sum + otherHalf(a), 0);
-  const owedByMe = theirs.reduce((sum, [, a]) => sum + otherHalf(a), 0);
+  const owedToMe = owedSum(mine);
+  const owedByMe = owedSum(theirs);
   const net = owedToMe - owedByMe;
   const name = esc(partner);
   const headline = settled
@@ -1753,8 +1808,8 @@ function settleBreakdown(partner, key, mine, theirs, settled = false) {
         <div class="hero-label">${headline}</div>
         ${net ? `<div class="settle-amount">${fmt(Math.abs(net))}</div>` : ''}
         <div class="settle-math">
-          <div>You paid <b>${fmt(mineTotal)}</b> split → ${name}'s half <b>${fmt(owedToMe)}</b></div>
-          <div>${name} paid <b>${fmt(theirTotal)}</b> split → your half <b>${fmt(owedByMe)}</b></div>
+          <div>You paid <b>${fmt(mineTotal)}</b> split → ${name}'s share <b>${fmt(owedToMe)}</b></div>
+          <div>${name} paid <b>${fmt(theirTotal)}</b> split → your share <b>${fmt(owedByMe)}</b></div>
         </div>
       </div>`,
     lists: `
@@ -1798,7 +1853,7 @@ function renderSettle() {
       <button class="icon-btn" data-action="settle-month" data-delta="1" ${key >= monthKey() ? 'disabled' : ''} aria-label="Next month">›</button>
     </div>`;
   const doneNote = done ? `
-    <p class="settle-done">Settled ${dayLabel(done.date).replace(/^(Today|Yesterday)$/, (d) => d.toLowerCase())}: ${settledText(done)}.${done.mine !== mineTotal
+    <p class="settle-done">Settled ${dayLabel(done.date).replace(/^(Today|Yesterday)$/, (d) => d.toLowerCase())}: ${settledText(done)}.${done.mine !== mineTotal || (done.mineItems && owedSum(done.mineItems) !== owedSum(mine))
       ? ' Your split expenses changed since then, so settle again to update it.' : ''}</p>` : '';
 
   if (settle.view === 'show') {
@@ -1837,9 +1892,12 @@ function renderSettle() {
     // Their categories have to be matched to yours first, so the month's breakdown is complete.
     const cats = catsIn(p.items);
     const unmatched = cats.filter((c) => !mappedCat(c.name)).length;
+    // An older app on their phone reads every shared charge as 50/50, so its total won't match yours.
+    const outdated = (p.av || 1) < APP_DATA_VERSION && !mine.every(isHalf);
     openSheet(`
       <h2>Settle up · ${monthLabel(key)}</h2>
       ${doneNote}
+      ${outdated ? `<p class="settle-warn">${esc(p.name)}'s app needs updating. You have charges that aren't split 50/50, and their version counts them as 50/50, so their total won't match yours. Update their app, then settle again.</p>` : ''}
       ${b.summary}
       ${cats.length ? `
         <section class="settle-map">
@@ -1868,7 +1926,7 @@ function renderSettle() {
     <h2>Settle up</h2>
     ${nav}
     ${doneNote}
-    <p class="settle-summary">You paid <b>${fmt(mineTotal)}</b> in ${mine.length} split expense${mine.length === 1 ? '' : 's'}, so your partner owes you <b>${fmt(mine.reduce((s, [, a]) => s + otherHalf(a), 0))}</b> before their side.</p>
+    <p class="settle-summary">You paid <b>${fmt(mineTotal)}</b> in ${mine.length} split expense${mine.length === 1 ? '' : 's'}, so your partner owes you <b>${fmt(owedSum(mine))}</b> before their side.</p>
     ${db.myName ? '' : `
       <label class="lbl">Your name <small>shown on your partner's phone</small></label>
       <input id="my-name" class="text" style="margin-top:0" placeholder="Your name" maxlength="30" autocomplete="off">`}
@@ -1972,7 +2030,7 @@ const uploadedHash = (month) => syncConf().uploaded?.[month];
 async function uploadMonth(month) {
   const items = splitItems(month);
   await syncWrite(`months/${month}/${db.deviceId}.json`,
-    { app: 'budget', v: 1, name: db.myName, deviceId: db.deviceId, month, uploadedAt: new Date().toISOString(), items },
+    { app: 'budget', v: 1, av: APP_DATA_VERSION, name: db.myName, deviceId: db.deviceId, month, uploadedAt: new Date().toISOString(), items },
     `${db.myName}: split expenses for ${month}`);
   setSyncConf({ uploaded: { ...syncConf().uploaded, [month]: itemsHash(items) } });
 }
@@ -1991,7 +2049,7 @@ async function partnerUpload(month) {
     const d = (await syncRead(f.path))?.data;
     if (!d || sameName(d.name, db.myName)) continue;
     if (partnerName && !sameName(d.name, partnerName)) continue;
-    uploads.push({ id: String(d.deviceId || ''), name: cleanName(d.name), month, items: cleanItems(d.items), uploadedAt: d.uploadedAt });
+    uploads.push({ id: String(d.deviceId || ''), name: cleanName(d.name), month, items: cleanItems(d.items), uploadedAt: d.uploadedAt, av: Number(d.av) || 1 });
   }
   uploads.sort((a, b) => String(b.uploadedAt).localeCompare(String(a.uploadedAt))); // ISO times sort as text
   return uploads[0] || null;
@@ -2087,7 +2145,7 @@ function partnerStatsCard(key, s) {
   let owedLabel = 'Balance';
   if (theirItems) {
     const b = settleBreakdown(name, key, splitItems(key), theirItems);
-    const settledNow = rec && rec.mine === b.mineTotal && rec.theirs === b.theirTotal;
+    const settledNow = rec && rec.mine === b.mineTotal && rec.theirs === b.theirTotal && rec.net === b.net;
     const owed = rec ? b.net - rec.net : b.net; // after settling, only what's changed since then
     if (settledNow) [owedValue, owedLabel] = ['✓', 'Settled'];
     else if (!owed) [owedValue, owedLabel] = ['$0', 'Even'];
@@ -2370,22 +2428,33 @@ const actions = {
   add: () => expenseSheet(null),
   'edit-expense': (el) => expenseSheet(db.expenses.find((e) => e.id === el.dataset.id)),
   'pick-cat'(el) {
-    $sheetBody.querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c === el));
+    $sheetBody.querySelectorAll('.cat-chips .chip').forEach((c) => c.classList.toggle('on', c === el));
     updateExpenseForm();
+  },
+  'pick-who'(el) {
+    $sheetBody.querySelectorAll('.who-chips .chip').forEach((c) => c.classList.toggle('on', c === el));
+    updateExpenseForm();
+    if (el.dataset.who === 'custom') document.getElementById('exp-share').focus();
   },
   'save-expense'(el) {
     const date = val('exp-date') || todayISO();
+    const form = expenseForm();
     const data = {
       date,
-      catId: $sheetBody.querySelector('.chip.on').dataset.id,
-      amount: parseAmount(val('exp-amt')),
-      split: document.getElementById('exp-split').checked,
+      catId: $sheetBody.querySelector('.cat-chips .chip.on').dataset.id,
+      amount: form.amount,
+      split: form.split,
       note: val('exp-note').trim(),
     };
     if (!data.amount) return;
     const existing = db.expenses.find((e) => e.id === el.dataset.id);
-    if (existing && existing.amount < 0) data.amount = -data.amount; // keep imported refunds negative
-    if (existing) Object.assign(existing, data);
+    const refund = existing && existing.amount < 0; // keep imported refunds negative
+    if (refund) data.amount = -data.amount;
+    if (form.share != null) data.share = refund ? -form.share : form.share;
+    if (existing) {
+      delete existing.share; // back to 50/50 or just yours, unless set again below
+      Object.assign(existing, data);
+    }
     else db.expenses.push({ id: uid(), createdAt: Date.now(), ...data });
     const where = date.slice(0, 7) === ui.month ? '' : ` in ${monthLabel(date.slice(0, 7))}`;
     commit(`${existing ? 'Saved' : 'Added'} ${fmt(counted(data))} · ${cat(data.catId).name}${where}`);
