@@ -107,6 +107,8 @@ main {
 .tap-stat { cursor: pointer; }
 .stat-extra { font-style: normal; font-weight: 700; color: var(--accent); }
 .budget-total { margin-top: 12px; }
+.cat-summary { display: flex; flex-direction: column; gap: 2px; margin: -6px 0 6px; color: var(--muted); font-size: 14px; }
+.cat-summary b { color: var(--text); font-size: 28px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .budget-total b { font-weight: 750; }
 
 .bar-row { padding: 7px 0; }

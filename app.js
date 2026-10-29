@@ -482,7 +482,8 @@ function homeView() {
 }
 
 // Spending per category: your own expenses plus your half of your partner's, through the category mapping.
-// Partner categories that aren't mapped yet get their own row, which you tap to map.
+// Partner categories that aren't mapped yet get their own row, which you tap to map. Tap any other row to
+// see its charges.
 function breakdownCard(key, s) {
   const totals = new Map(activeCats('flex').map((c) => [c.id, 0]));
   s.exps.forEach((e) => totals.set(e.catId, (totals.get(e.catId) || 0) + counted(e)));
@@ -496,7 +497,7 @@ function breakdownCard(key, s) {
       unmapped.set(catKey(name), u);
     }
   }
-  const rows = [...[...totals].map(([id, total]) => ({ c: cat(id), total })),
+  const rows = [...[...totals].map(([id, total]) => ({ id, c: cat(id), total })),
     ...[...unmapped.values()].map((u) => ({ u, total: u.total }))].sort((a, b) => b.total - a.total);
   if (!rows.length) return '';
   const max = Math.max(1, ...rows.map((r) => r.total));
@@ -504,12 +505,13 @@ function breakdownCard(key, s) {
   return `
     <section class="card">
       <h2>By category${s.partner ? ` <small>yours + your half of ${partner}'s</small>` : ''}</h2>
-      ${rows.map(({ c, u, total }) => {
+      ${rows.map(({ id, c, u, total }) => {
         const pct = s.spent ? Math.round((total / s.spent) * 100) : 0;
         const label = c ? `<span class="bar-emoji">${c.emoji}</span>${esc(c.name)}`
           : `<span class="bar-emoji">${esc(u.emoji)}</span>${esc(u.name)} <span class="unmapped">${partner}'s · tap to match</span>`;
+        const tap = u ? `data-action="map-cat" data-name="${esc(u.name)}"` : `data-action="cat-detail" data-month="${key}" data-id="${id}"`;
         return `
-          <div class="bar-row ${total ? '' : 'zero'} ${u ? 'tappable' : ''}" ${u ? `data-action="map-cat" data-name="${esc(u.name)}" role="button" tabindex="0"` : ''}>
+          <div class="bar-row tappable ${total ? '' : 'zero'}" ${tap} role="button" tabindex="0">
             <div class="bar-head"><span>${label}</span><span>${fmt(total)} <small>${pct}%</small></span></div>
             <div class="bar"><span style="width:${(total / max) * 100}%"></span></div>
           </div>`;
@@ -546,6 +548,58 @@ function expenseRows(exps) {
       </button>`;
   }
   return html;
+}
+
+// One category's charges for a month: yours, plus your half of your partner's that are matched to it.
+function categoryCharges(key, id) {
+  const own = expensesIn(key).filter((e) => e.catId === id);
+  const theirs = partnerItems(key).map((item, i) => ({ item, i })).filter(({ item }) => mappedCat(item[3]) === id);
+  const total = own.reduce((sum, e) => sum + counted(e), 0) + theirs.reduce((sum, { item }) => sum + otherHalf(item[1]), 0);
+  return { own, theirs, total };
+}
+
+// Every charge in one category for a month, newest first, with last month for comparison.
+function categorySheet(key, id) {
+  const c = cat(id);
+  const { own, theirs, total } = categoryCharges(key, id);
+  const spent = stats(key).spent;
+  const prevKey = addMonths(key, -1);
+  const prev = prevKey >= db.startMonth ? categoryCharges(prevKey, id).total : null;
+  const diff = prev == null ? '' : total === prev ? ' · same'
+    : ` · ${total > prev ? '↑' : '↓'} ${fmt(Math.abs(total - prev))}`;
+  const partner = esc(partnerLabel(key));
+  const back = `data-back-month="${key}" data-back-id="${id}"`;
+  const entries = [
+    ...own.map((e) => ({ date: e.date, order: e.createdAt, html: `
+      <button class="row" data-action="cat-expense" data-id="${e.id}" ${back}>
+        <span class="emoji">${c.emoji}</span>
+        <span class="row-main"><span class="row-title">${esc(e.note || c.name)}</span>${e.split ? '<span class="row-sub">Split</span>' : ''}</span>
+        <span class="row-amt">${fmt(counted(e))}${e.split ? `<span class="row-sub">½ of ${fmt(e.amount)}</span>` : ''}</span>
+      </button>` })),
+    ...theirs.map(({ item: [day, amount, emoji, name, note], i }) => ({ date: `${key}-${pad(day)}`, order: 0, html: `
+      <button class="row" data-action="partner-charge" data-month="${key}" data-i="${i}" ${back}>
+        <span class="emoji">${esc(emoji)}</span>
+        <span class="row-main"><span class="row-title">${esc(note || name)}</span><span class="row-sub">${partner} paid${catKey(name) === catKey(c.name) ? '' : ` · ${esc(name)}`}</span></span>
+        <span class="row-amt">${fmt(otherHalf(amount))}<span class="row-sub">½ of ${fmt(amount)}</span></span>
+      </button>` })),
+  ].sort((a, b) => b.date.localeCompare(a.date) || b.order - a.order);
+  let list = '';
+  let lastDate = '';
+  for (const e of entries) {
+    if (e.date !== lastDate) list += `<div class="day">${dayLabel(e.date)}</div>`;
+    lastDate = e.date;
+    list += e.html;
+  }
+  const count = entries.length;
+  openSheet(`
+    <h2>${c.emoji} ${esc(c.name)} · ${monthLabel(key).split(' ')[0]}</h2>
+    <div class="cat-summary">
+      <b>${fmt(total)}</b>
+      <span>${count} charge${count === 1 ? '' : 's'}${spent > 0 ? ` · ${Math.round((total / spent) * 100)}% of spending` : ''}</span>
+      ${prev == null ? '' : `<span>${monthLabel(prevKey).split(' ')[0]} ${fmt(prev)}${diff}</span>`}
+    </div>
+    ${list || '<p class="empty">No charges in this category this month.</p>'}
+    <button class="text-btn" data-action="close">Close</button>`);
 }
 
 function fixedCard(key) {
@@ -675,8 +729,8 @@ function partnerRow([day, amount, emoji, name, note], key, index) {
     </button>`;
 }
 
-// The full details of one of your partner's split charges.
-function partnerChargeSheet(key, index) {
+// The full details of one of your partner's split charges. backId: opened from that category's list.
+function partnerChargeSheet(key, index, backId) {
   const item = partnerItems(key)[index];
   if (!item) return;
   const [day, amount, emoji, name, note] = item;
@@ -695,7 +749,8 @@ function partnerChargeSheet(key, index) {
       ${row('Counts as', c ? `${c.emoji} ${esc(c.name)}` : '<span class="unmapped">Not matched yet</span>')}
     </div>
     <p class="hint">${esc(partnerLabel(key))} logged this, so it can only be edited on their phone. Change which category it counts as in <b>Settings → Partner's categories</b>.</p>
-    <button class="text-btn" data-action="close">Close</button>`);
+    ${backId ? `<button class="text-btn" data-action="cat-detail" data-month="${key}" data-id="${backId}">Back</button>`
+      : '<button class="text-btn" data-action="close">Close</button>'}`);
 }
 
 // A dropdown per partner category for picking which of your categories it counts toward.
@@ -994,6 +1049,7 @@ const $sheet = document.getElementById('sheet');
 const $sheetBody = document.getElementById('sheet-body');
 
 function openSheet(html, focusId) {
+  sheetBack = null;
   $sheetBody.innerHTML = html;
   $sheet.classList.add('open');
   $sheet.setAttribute('aria-hidden', 'false');
@@ -1001,7 +1057,11 @@ function openSheet(html, focusId) {
   if (focusId) document.getElementById(focusId)?.focus();
 }
 
+// Reopens the sheet you came from once the one on top is saved. Cleared whenever a sheet closes.
+let sheetBack = null;
+
 function closeSheet() {
+  sheetBack = null;
   stopScan(); // the settle-up camera, if it's on
   document.activeElement?.blur();
   $sheet.classList.remove('open');
@@ -2271,9 +2331,11 @@ function toast(msg) {
 }
 
 function commit(msg) {
+  const back = sheetBack; // e.g. editing a charge from a category's list goes back to that list
   save();
   closeSheet();
   render();
+  if (back) back();
   if (msg) toast(msg);
 }
 
@@ -2291,7 +2353,13 @@ const actions = {
     render();
   },
   'map-cat': (el) => mapSheet(el.dataset.name),
-  'partner-charge': (el) => partnerChargeSheet(el.dataset.month, Number(el.dataset.i)),
+  'partner-charge': (el) => partnerChargeSheet(el.dataset.month, Number(el.dataset.i), el.dataset.backId),
+  'cat-detail': (el) => categorySheet(el.dataset.month, el.dataset.id),
+  'cat-expense'(el) {
+    const { backMonth, backId } = el.dataset;
+    expenseSheet(db.expenses.find((e) => e.id === el.dataset.id));
+    sheetBack = () => categorySheet(backMonth, backId);
+  },
   'open-month'(el) {
     ui.month = el.dataset.month;
     ui.view = 'month';
