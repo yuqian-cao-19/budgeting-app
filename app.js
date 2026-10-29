@@ -148,6 +148,9 @@ function newMonth() {
   };
 }
 
+// Extra income added to one month: [{ id, name, amount }].
+const monthIncome = (m) => (m.income || []).reduce((sum, i) => sum + i.amount, 0);
+
 // Every month from startMonth to now gets a snapshot of budget + fixed bills.
 function ensureMonths() {
   const now = monthKey();
@@ -205,9 +208,10 @@ function stats(key) {
     const prev = stats(addMonths(key, -1));
     carry = prev.remaining - prev.saved; // what was left after moving money into savings
   }
-  const available = m.budget + carry - fixed;
+  const extra = monthIncome(m); // a bonus or side income, for this month only; what's left rolls over
+  const available = m.budget + extra + carry - fixed;
   return {
-    budget: m.budget, fixed, spent, mine, partner, carry, available,
+    budget: m.budget, extra, fixed, spent, mine, partner, carry, available,
     remaining: available - spent, saved: depositsFrom(key), exps,
   };
 }
@@ -362,6 +366,49 @@ function render() {
 
 const stat = (label, value) => `<div class="stat"><b>${value}</b><span>${label}</span></div>`;
 
+// The Budget column, which you tap to add a bonus or other extra income to the month.
+const budgetStat = (s) => `
+  <button class="stat tap-stat" data-action="open-budget" aria-label="Budget, tap to add extra income">
+    <b>${fmtShort(s.budget + s.carry + s.extra)}</b>
+    <span>${s.extra ? `Budget <em class="stat-extra">+${fmtShort(s.extra)}</em>` : 'Budget <em class="stat-extra">＋</em>'}</span>
+  </button>`;
+
+// This month's budget: the regular amount, what rolled over, and any extra income, which you can add to.
+function budgetSheet() {
+  const key = ui.month;
+  const m = db.months[key];
+  const s = stats(key);
+  const row = (label, value) => `<div class="sync-row"><span>${label}</span><b>${value}</b></div>`;
+  openSheet(`
+    <h2>${monthLabel(key).split(' ')[0]} budget</h2>
+    <div class="sync-box">
+      ${row('Monthly budget', fmt(s.budget))}
+      ${s.carry ? row(`${s.carry < 0 ? 'Overspent' : 'Rolled over'} from ${monthLabel(addMonths(key, -1)).split(' ')[0]}`, `${s.carry < 0 ? '−' : '+'}${fmt(Math.abs(s.carry))}`) : ''}
+    </div>
+    <label class="lbl">Extra income this month</label>
+    ${(m.income || []).map((i) => `
+      <button class="row" data-action="edit-income" data-id="${i.id}">
+        <span class="emoji">💰</span>
+        <span class="row-main"><span class="row-title">${esc(i.name)}</span></span>
+        <span class="row-amt pos">+${fmt(i.amount)}</span>
+      </button>`).join('')}
+    <button class="add-row" data-action="add-income">+ Add extra income</button>
+    <div class="sync-box budget-total">${row(`${monthLabel(key).split(' ')[0]} total`, fmt(s.budget + s.carry + s.extra))}</div>
+    <p class="hint">A bonus or side income, for ${monthLabel(key)} only. Whatever's left at the end of the month rolls into next month's budget. To change your regular budget, go to Settings.</p>
+    <button class="text-btn" data-action="close">Close</button>`);
+}
+
+function incomeSheet(id) {
+  const i = (db.months[ui.month].income || []).find((x) => x.id === id);
+  openSheet(`
+    <h2>${i ? 'Edit' : 'Add'} extra income · ${monthLabel(ui.month).split(' ')[0]}</h2>
+    <div class="money-field big"><span>$</span><input id="inc-amt" inputmode="decimal" placeholder="0.00" value="${i ? toInput(i.amount) : ''}" autocomplete="off"></div>
+    <input id="inc-name" class="text" placeholder="What it's from (e.g. Bonus)" maxlength="40" value="${i ? esc(i.name) : ''}">
+    <button class="primary" data-action="save-income" data-id="${i ? i.id : ''}">${i ? 'Save' : 'Add to budget'}</button>
+    ${i ? `<button class="danger-btn" data-action="delete-income" data-id="${i.id}">Delete</button>` : ''}
+    <button class="text-btn" data-action="open-budget">Back</button>`, i ? null : 'inc-amt');
+}
+
 function homeView() {
   const key = ui.month;
   const s = stats(key);
@@ -389,9 +436,9 @@ function homeView() {
         <div><b>${fmt(setAside)}</b> ${isCurrent ? 'for savings' : 'to savings'}</div>
       </div>`
     : '';
-  // The sum behind the big number: budget − fixed − spent − savings.
+  // The sum behind the big number: budget + extra income − fixed − spent − savings.
   const num = (c) => fmtShort(Math.abs(c)).replace('$', '');
-  const terms = [s.fixed, s.spent, setAside].filter(Boolean);
+  const terms = [-s.extra, s.fixed, s.spent, setAside].filter(Boolean);
   const equation = `${s.budget + s.carry < 0 ? '−' : ''}${num(s.budget + s.carry)}${terms.map((t) => ` ${t < 0 ? '+' : '−'} ${num(t)}`).join('')}`;
 
   const pending = unclosedMonth();
@@ -420,7 +467,7 @@ function homeView() {
       ${actual}
     </section>
     <section class="card stats">
-      ${stat('Budget', fmtShort(s.budget + s.carry))}
+      ${budgetStat(s)}
       ${stat('Fixed', fmtShort(s.fixed))}
       ${stat('Spent', fmtShort(s.spent))}
     </section>
@@ -529,7 +576,7 @@ function historyView() {
       <button class="row" data-action="open-month" data-month="${k}">
         <span class="row-main">
           <span class="row-title">${monthLabel(k)}${db.settlements[k] ? ' <span class="badge">Settled</span>' : ''}</span>
-          <span class="row-sub">Spent ${fmt(s.spent)} · Fixed ${fmt(s.fixed)}${s.saved ? ` · Saved ${fmt(s.saved)}` : ''}</span>
+          <span class="row-sub">Spent ${fmt(s.spent)} · Fixed ${fmt(s.fixed)}${s.extra ? ` · Extra +${fmt(s.extra)}` : ''}${s.saved ? ` · Saved ${fmt(s.saved)}` : ''}</span>
         </span>
         <span class="row-amt ${left < 0 ? 'neg' : 'pos'}">${fmtLeft(left)}<span class="row-sub">${left < 0 ? 'over' : 'left'}</span></span>
         <span class="chev">›</span>
@@ -579,6 +626,16 @@ function monthView() {
       ${stat(left < 0 ? 'Over' : isCurrent ? 'Left to spend' : 'Left over', fmtShort(Math.abs(left)))}
     </section>
     ${status ? `<p class="settle-done">${status}</p>` : ''}
+    ${s.extra ? `
+      <section class="card">
+        <h2>Extra income <small>+${fmt(s.extra)}</small></h2>
+        ${db.months[key].income.map((i) => `
+          <button class="row" data-action="edit-income" data-id="${i.id}">
+            <span class="emoji">💰</span>
+            <span class="row-main"><span class="row-title">${esc(i.name)}</span></span>
+            <span class="row-amt pos">+${fmt(i.amount)}</span>
+          </button>`).join('')}
+      </section>` : ''}
     ${breakdownCard(key, s)}
     </div><div class="col">
     <section class="card">
@@ -2269,6 +2326,31 @@ const actions = {
     if (!confirm('Delete this expense?')) return;
     db.expenses = db.expenses.filter((e) => e.id !== el.dataset.id);
     commit('Expense deleted');
+  },
+  'open-budget': () => budgetSheet(),
+  'add-income': () => incomeSheet(null),
+  'edit-income': (el) => incomeSheet(el.dataset.id),
+  'save-income'(el) {
+    const amount = parseAmount(val('inc-amt'));
+    if (!amount || amount < 0) return document.getElementById('inc-amt').focus();
+    const name = val('inc-name').trim() || 'Extra income';
+    const m = db.months[ui.month];
+    m.income ||= [];
+    const i = m.income.find((x) => x.id === el.dataset.id);
+    if (i) Object.assign(i, { name, amount });
+    else m.income.push({ id: uid(), name, amount });
+    save();
+    render();
+    budgetSheet();
+    toast(i ? 'Saved' : `${fmt(amount)} added to ${monthLabel(ui.month).split(' ')[0]}`);
+  },
+  'delete-income'(el) {
+    const m = db.months[ui.month];
+    m.income = m.income.filter((x) => x.id !== el.dataset.id);
+    save();
+    render();
+    budgetSheet();
+    toast('Removed');
   },
   'edit-month-fixed': (el) => monthFixedSheet(el.dataset.id),
   'save-month-fixed'(el) {

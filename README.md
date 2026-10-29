@@ -33,6 +33,15 @@ How the import handles charges:
 
 The file is read on your phone and never uploaded anywhere.
 
+## Extra income (bonus, side income)
+
+Got a bonus or earned extra one month? On Home, tap **Budget** (in the Budget / Fixed / Spent card), then **+ Add extra income**, and enter the amount and what it's from. It's added to that month only:
+
+- The Budget column shows the new total with the extra underneath (e.g. **$4,500**, **+$500**), and the line under the big number shows it too: `4,000 + 500 − 1,800 − 200`.
+- Whatever's left at the end of the month rolls into next month's budget, like any leftover (or move it into a savings fund when you close out the month).
+- It works for past months too: go back with the month arrows on Home. The month's History page lists its extra income, and you tap an entry to edit or delete it.
+- Your regular monthly budget in Settings doesn't change.
+
 ## Savings
 
 The **Savings** tab holds your savings funds, like an emergency fund, travel or stocks. Each fund has one balance, an optional goal, and either or both of these monthly amounts:
