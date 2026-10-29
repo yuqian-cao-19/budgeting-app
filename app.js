@@ -611,7 +611,7 @@ function categorySheet(key, id) {
       ${prev == null ? '' : `<span>${monthLabel(prevKey).split(' ')[0]} ${fmt(prev)}${diff}</span>`}
     </div>
     ${list || '<p class="empty">No charges in this category this month.</p>'}
-    <button class="text-btn" data-action="close">Close</button>`);
+    <button class="text-btn" data-action="close">Close</button>`, null, { short: true });
 }
 
 function fixedCard(key) {
@@ -1061,9 +1061,12 @@ function backupCard() {
 const $sheet = document.getElementById('sheet');
 const $sheetBody = document.getElementById('sheet-body');
 
-function openSheet(html, focusId) {
+// short: a list sheet that opens at most ~70% of the screen tall and scrolls inside.
+function openSheet(html, focusId, { short = false } = {}) {
   sheetBack = null;
   $sheetBody.innerHTML = html;
+  $panel.classList.toggle('short', short);
+  $panel.scrollTop = 0;
   $sheet.classList.add('open');
   $sheet.setAttribute('aria-hidden', 'false');
   // Must run synchronously inside the tap handler so iOS opens the keyboard.
@@ -1072,6 +1075,40 @@ function openSheet(html, focusId) {
 
 // Reopens the sheet you came from once the one on top is saved. Cleared whenever a sheet closes.
 let sheetBack = null;
+
+// Swipe a sheet down to close it. The drag starts only when the sheet is scrolled to the top, so swiping
+// up or down inside a long list still scrolls it.
+const $panel = $sheet.querySelector('.panel');
+let drag = null;
+$panel.addEventListener('touchstart', (ev) => {
+  if (ev.touches.length !== 1 || $panel.scrollTop > 0 || ev.target.closest('input, textarea, select, video')) return;
+  drag = { y: ev.touches[0].clientY, t: Date.now(), dy: 0 };
+}, { passive: true });
+$panel.addEventListener('touchmove', (ev) => {
+  if (!drag) return;
+  const dy = ev.touches[0].clientY - drag.y;
+  if (dy < 0 && !drag.dy) { // moving up first: it's a scroll, not a swipe
+    drag = null;
+    return;
+  }
+  drag.dy = Math.max(0, dy);
+  $panel.style.transition = 'none';
+  $panel.style.transform = `translateY(${drag.dy}px)`;
+  ev.preventDefault();
+}, { passive: false });
+function endDrag() {
+  if (!drag) return;
+  const { dy, t } = drag;
+  drag = null;
+  $panel.style.transition = '';
+  $panel.style.transform = '';
+  if (dy > 90 || (dy > 30 && dy / (Date.now() - t) > 0.5)) closeSheet(); // far enough, or a quick flick
+}
+$panel.addEventListener('touchend', endDrag);
+$panel.addEventListener('touchcancel', () => {
+  if (drag) drag.dy = 0;
+  endDrag();
+});
 
 function closeSheet() {
   sheetBack = null;

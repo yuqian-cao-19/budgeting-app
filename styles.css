@@ -346,6 +346,7 @@ textarea.text { resize: none; line-height: 1.4; word-break: break-all; }
 .sheet.open { pointer-events: auto; }
 .sheet.open .backdrop { opacity: 1; }
 .sheet.open .panel { transform: none; }
+.panel.short { max-height: min(calc(var(--vvh, 100vh) * .7), calc(var(--vvh, 100vh) - 30px)); }
 
 /* ---------- Import review ---------- */
 
